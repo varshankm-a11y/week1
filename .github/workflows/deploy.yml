@@ -1,8 +1,7 @@
-name: Full Automated EKS Provisioning & Deployment
+name: Manual - EKS Cluster Provisioning & App Deployment
 
 on:
-  push:
-    branches: [ main, master ]
+  workflow_dispatch: # MANUAL RUN ONLY - Will never trigger on push
 
 env:
   AWS_REGION: us-east-1
@@ -45,16 +44,9 @@ jobs:
       - name: Join the Worker Nodes
         run: |
           cd eks
-          # 1. Fetch NodeInstanceRole from Terraform
           NODE_ROLE_ARN=$(terraform output -raw NodeInstanceRole)
-          
-          # 2. Download official AWS ConfigMap
           curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/cloudformation/2020-10-29/aws-auth-cm.yaml
-          
-          # 3. Replace placeholder text with actual NodeInstanceRole ARN
           sed -i "s|<ARN of instance role (not instance profile)>|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml
-          
-          # 4. Apply edited ConfigMap
           kubectl apply -f aws-auth-cm.yaml
 
       - name: Verify the Nodes
