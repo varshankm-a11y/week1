@@ -38,22 +38,30 @@ jobs:
           terraform plan
           terraform apply -auto-approve
 
-      - name: Connect to EKS Cluster
+      - name: Create KUBECONFIG for kubectl
         run: |
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
 
-      - name: Join Worker Nodes (Apply aws-auth ConfigMap)
+      - name: Join the Worker Nodes
         run: |
           cd eks
+          # 1. Fetch NodeInstanceRole from Terraform
           NODE_ROLE_ARN=$(terraform output -raw NodeInstanceRole)
-          sed "s|NODE_ROLE_ARN_PLACEHOLDER|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml.template > aws-auth-cm.yaml
+          
+          # 2. Download official AWS ConfigMap
+          curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/cloudformation/2020-10-29/aws-auth-cm.yaml
+          
+          # 3. Replace placeholder text with actual NodeInstanceRole ARN
+          sed -i "s|<ARN of instance role (not instance profile)>|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml
+          
+          # 4. Apply edited ConfigMap
           kubectl apply -f aws-auth-cm.yaml
 
-      - name: Wait for Worker Nodes
+      - name: Verify the Nodes
         run: |
-          echo "Waiting 45 seconds for worker nodes to join..."
-          sleep 45
-          kubectl get nodes -o wide
+          echo "Waiting 60 seconds for worker nodes to join..."
+          sleep 60
+          kubectl get node -o wide
 
       - name: Deploy Kubernetes Manifests
         run: |
