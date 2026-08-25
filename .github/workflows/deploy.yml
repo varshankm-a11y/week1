@@ -9,9 +9,6 @@ env:
   EKS_CLUSTER_NAME: demo-eks
 
 jobs:
-  # -----------------------------------------------------------------
-  # JOB 1: Provision EKS Cluster using your Terraform Scripts
-  # -----------------------------------------------------------------
   terraform-provision:
     name: Provision EKS with Terraform
     runs-on: ubuntu-latest
@@ -37,13 +34,11 @@ jobs:
           terraform init
           terraform validate
 
-      - name: Terraform Apply (Provision Infrastructure)
+      - name: Terraform Apply
         run: |
           cd eks/terraform
           terraform apply -auto-approve
-# -----------------------------------------------------------------
-  # JOB 2: Deploy Kubernetes Manifests to EKS
-  # -----------------------------------------------------------------
+
   deploy-to-eks:
     name: Deploy Application to EKS
     needs: terraform-provision
