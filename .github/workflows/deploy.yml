@@ -37,14 +37,23 @@ jobs:
       - name: Import Existing Resources to State
         run: |
           cd eks
-          # Get AWS Account ID for IAM Policy import
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           
-          # Safely import pre-existing resources if they exist
+          # IAM & Key Pairs
           terraform import aws_key_pair.eks_kp eks_kp || true
           terraform import aws_iam_role.node_instance_role eksWorkerNodeRole || true
           terraform import aws_iam_policy.loadbalancer_policy arn:aws:iam::${ACCOUNT_ID}:policy/eksPolicy || true
           terraform import 'module.create_eksClusterRole[0].aws_iam_role.eksClusterRole' eksClusterRole || true
+          terraform import aws_iam_instance_profile.node_instance_profile NodeInstanceProfile || true
+
+          # EKS Cluster
+          terraform import aws_eks_cluster.demo_eks demo-eks || true
+
+          # Security Group (Fetches existing SG ID by name)
+          SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=NodeSecurityGroupIngress" --query "SecurityGroups[0].GroupId" --output text)
+          if [ "$SG_ID" != "None" ] && [ -n "$SG_ID" ]; then
+            terraform import aws_security_group.node_security_group $SG_ID || true
+          fi
 
       - name: Terraform Apply
         run: |
