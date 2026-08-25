@@ -30,13 +30,13 @@ jobs:
 
       - name: Terraform Init & Validate
         run: |
-          cd eks/terraform
+          cd eks
           terraform init
           terraform validate
 
       - name: Terraform Apply
         run: |
-          cd eks/terraform
+          cd eks
           terraform apply -auto-approve
 
   deploy-to-eks:
