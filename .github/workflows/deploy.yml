@@ -29,23 +29,13 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Terraform Init
+      - name: Terraform Init, Plan & Apply
         run: |
           cd eks
           chmod +x check-environment.sh
           source check-environment.sh
           terraform init
-
-      - name: Terraform Plan
-        run: |
-          cd eks
-          source check-environment.sh
           terraform plan
-
-      - name: Terraform Apply
-        run: |
-          cd eks
-          source check-environment.sh
           terraform apply -auto-approve
 
       - name: Connect to EKS Cluster
@@ -59,7 +49,7 @@ jobs:
           sed "s|NODE_ROLE_ARN_PLACEHOLDER|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml.template > aws-auth-cm.yaml
           kubectl apply -f aws-auth-cm.yaml
 
-      - name: Wait for Worker Nodes to become Ready
+      - name: Wait for Worker Nodes
         run: |
           echo "Waiting 45 seconds for worker nodes to join..."
           sleep 45
