@@ -1,0 +1,71 @@
+name: Infrastructure Provisioning and EKS Deployment
+
+on:
+  push:
+    branches: [ main, master ]
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: demo-eks
+
+jobs:
+  # -----------------------------------------------------------------
+  # JOB 1: Provision EKS Cluster using your Terraform Scripts
+  # -----------------------------------------------------------------
+  terraform-provision:
+    name: Provision EKS with Terraform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init & Validate
+        run: |
+          cd eks/terraform
+          terraform init
+          terraform validate
+
+      - name: Terraform Apply (Provision Infrastructure)
+        run: |
+          cd eks/terraform
+          terraform apply -auto-approve
+# -----------------------------------------------------------------
+  # JOB 2: Deploy Kubernetes Manifests to EKS
+  # -----------------------------------------------------------------
+  deploy-to-eks:
+    name: Deploy Application to EKS
+    needs: terraform-provision
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Connect to EKS Cluster
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Deploy Kubernetes Manifests
+        run: |
+          kubectl apply -f eks/k8s/app/deployment.yaml
+          kubectl apply -f eks/k8s/app/service.yaml
+          kubectl apply -f eks/k8s/app/hpa.yaml
+          kubectl rollout status deployment/prod-app --timeout=180s
