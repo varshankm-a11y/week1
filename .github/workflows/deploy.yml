@@ -34,6 +34,18 @@ jobs:
           terraform init
           terraform validate
 
+      - name: Import Existing Resources to State
+        run: |
+          cd eks
+          # Get AWS Account ID for IAM Policy import
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          
+          # Safely import pre-existing resources if they exist
+          terraform import aws_key_pair.eks_kp eks_kp || true
+          terraform import aws_iam_role.node_instance_role eksWorkerNodeRole || true
+          terraform import aws_iam_policy.loadbalancer_policy arn:aws:iam::${ACCOUNT_ID}:policy/eksPolicy || true
+          terraform import 'module.create_eksClusterRole[0].aws_iam_role.eksClusterRole' eksClusterRole || true
+
       - name: Terraform Apply
         run: |
           cd eks
