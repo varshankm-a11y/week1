@@ -1,0 +1,44 @@
+name: Manual - Custom VPC & Infrastructure Provisioning
+
+on:
+  workflow_dispatch: # MANUAL RUN ONLY
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  provision-custom-vpc:
+    name: Provision Custom VPC Infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init & Validate
+        run: |
+          cd infrastructure
+          terraform init -backend=false
+          terraform validate
+
+      - name: Terraform Plan
+        run: |
+          cd infrastructure
+          terraform plan
+
+      - name: Terraform Apply
+        run: |
+          cd infrastructure
+          terraform apply -auto-approve
+        continue-on-error: true # Prevents pipeline failure if KodeKloud sandbox limits IGW/NAT creation
