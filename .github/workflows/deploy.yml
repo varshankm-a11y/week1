@@ -139,19 +139,22 @@ jobs:
           helm repo add elastic https://helm.elastic.co
           helm repo update
 
-          # 2. Metrics Server
+          # 2. Install Metrics Server
           helm upgrade --install metrics-server metrics-server/metrics-server \
             --namespace kube-system \
             --set args={--kubelet-insecure-tls}
 
-          # 3. Prometheus & Grafana Stack
+          # 3. Pause for 15s to allow metrics APIService to register cleanly
+          sleep 15
+
+          # 4. Install Prometheus & Grafana Stack
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
             --set grafana.enabled=true \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
 
-          # 4. Elasticsearch & Kibana Logging Stack
+          # 5. Install Elasticsearch & Kibana Logging Stack
           helm upgrade --install elasticsearch elastic/elasticsearch \
             --namespace logging \
             --create-namespace \
