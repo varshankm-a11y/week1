@@ -124,16 +124,20 @@ jobs:
 
       - name: Step 3.3 - Install Metrics Server & Prometheus/Grafana Stack
         run: |
-          # 1. Install Metrics Server for HPA pod metrics gathering
-          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-          
-          # 2. Add Prometheus Helm repo & Install Prometheus/Grafana Stack
+          # 1. Add Helm Repositories
+          helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           helm repo update
-          kubectl create ns monitoring --dry-run=client -o yaml | kubectl apply -f -
-          
+
+          # 2. Install/Upgrade Metrics Server with EKS TLS flag
+          helm upgrade --install metrics-server metrics-server/metrics-server \
+            --namespace kube-system \
+            --set args={--kubelet-insecure-tls}
+
+          # 3. Install/Upgrade Prometheus & Grafana Stack
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
+            --create-namespace \
             --set grafana.enabled=true \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
 
