@@ -131,24 +131,40 @@ jobs:
           sed -i "s|<ARN of instance role (not instance profile)>|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml
           kubectl apply -f aws-auth-cm.yaml
 
-      - name: Step 3.3 - Install Metrics Server & Prometheus/Grafana Stack
+      - name: Step 3.3 - Install Metrics Server, Observability & Logging Stack
         run: |
           # 1. Add Helm Repositories
           helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add elastic https://helm.elastic.co
           helm repo update
 
-          # 2. Install/Upgrade Metrics Server with EKS TLS flag
+          # 2. Metrics Server
           helm upgrade --install metrics-server metrics-server/metrics-server \
             --namespace kube-system \
             --set args={--kubelet-insecure-tls}
 
-          # 3. Install/Upgrade Prometheus & Grafana Stack
+          # 3. Prometheus & Grafana Stack
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
             --set grafana.enabled=true \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
+
+          # 4. Elasticsearch & Kibana Logging Stack
+          helm upgrade --install elasticsearch elastic/elasticsearch \
+            --namespace logging \
+            --create-namespace \
+            --set replicas=1 \
+            --set minimumMasterNodes=1 \
+            --set resources.requests.cpu="250m" \
+            --set resources.requests.memory="1Gi"
+
+          helm upgrade --install kibana elastic/kibana \
+            --namespace logging \
+            --create-namespace \
+            --set resources.requests.cpu="250m" \
+            --set resources.requests.memory="1Gi"
 
       - name: Step 3.4 - Inject Dynamic ECR Image Path
         run: |
@@ -156,11 +172,12 @@ jobs:
           ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
           sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
 
-      - name: Step 3.5 - Deploy Base Setup & Security Controls
+      - name: Step 3.5 - Deploy Base Setup, Security Controls & FluentBit
         run: |
           kubectl apply -f eks/k8s/base-setup.yaml
           kubectl apply -f eks/k8s/rbac.yaml
           kubectl apply -f eks/k8s/network-policy.yaml
+          kubectl apply -f eks/k8s/logging-fluentbit.yaml
 
       - name: Step 3.6 - Deploy App Configs, Workloads & HPA
         run: |
