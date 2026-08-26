@@ -144,8 +144,8 @@ jobs:
             --namespace kube-system \
             --set args={--kubelet-insecure-tls}
 
-          # 3. Pause for 15s to allow metrics APIService to register cleanly
-          sleep 15
+          # 3. Pause for 10s
+          sleep 10
 
           # 4. Install Prometheus & Grafana Stack
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
@@ -154,20 +154,21 @@ jobs:
             --set grafana.enabled=true \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
 
-          # 5. Install Elasticsearch & Kibana Logging Stack
+          # 5. Install Elasticsearch & Kibana (with --no-hooks to prevent timeout)
           helm upgrade --install elasticsearch elastic/elasticsearch \
             --namespace logging \
             --create-namespace \
             --set replicas=1 \
             --set minimumMasterNodes=1 \
-            --set resources.requests.cpu="250m" \
-            --set resources.requests.memory="1Gi"
+            --set resources.requests.cpu="100m" \
+            --set resources.requests.memory="512Mi"
 
           helm upgrade --install kibana elastic/kibana \
             --namespace logging \
             --create-namespace \
-            --set resources.requests.cpu="250m" \
-            --set resources.requests.memory="1Gi"
+            --no-hooks \
+            --set resources.requests.cpu="100m" \
+            --set resources.requests.memory="512Mi"
 
       - name: Step 3.4 - Inject Dynamic ECR Image Path
         run: |
