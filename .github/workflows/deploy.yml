@@ -1,21 +1,64 @@
-name: Manual - EKS Cluster Provisioning & App Deployment
+name: Manual - Provision & Deploy Pipeline
 
 on:
-  workflow_dispatch: # MANUAL RUN ONLY - Will never trigger on push
+  workflow_dispatch: # MANUAL RUN ONLY
 
 env:
   AWS_REGION: us-east-1
   EKS_CLUSTER_NAME: demo-eks
+  ECR_REPOSITORY: prod-app-repo
 
 jobs:
-  provision-and-deploy:
-    name: Provision EKS Cluster & Deploy App
+  # =========================================================
+  # STAGE 1: APP BUILD, TEST & DOCKER IMAGE PUSH
+  # =========================================================
+  app-ci-stage:
+    name: "Stage 1: App Test, Build & Push"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Setup Terraform
+      - name: Step 1.1 - Run Application Unit Tests
+        run: |
+          echo "Running application tests..."
+          # Insert test commands here if using Node/Python/Go (e.g., npm test)
+
+      - name: Step 1.2 - Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Step 1.3 - Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Step 1.4 - Build & Push Docker Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} || \
+          aws ecr create-repository --repository-name ${{ env.ECR_REPOSITORY }}
+
+          docker build -t ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG} -t ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest .
+          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+
+  # =========================================================
+  # STAGE 2: TERRAFORM PROVISIONING (INIT, PLAN, APPLY)
+  # =========================================================
+  terraform-infrastructure-stage:
+    name: "Stage 2: Terraform Infrastructure"
+    needs: app-ci-stage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform CLI
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.5.0
@@ -28,20 +71,46 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Terraform Init, Plan & Apply
+      - name: Step 2.1 - Terraform Init
         run: |
           cd eks
           chmod +x check-environment.sh
           source check-environment.sh
           terraform init
+
+      - name: Step 2.2 - Terraform Plan
+        run: |
+          cd eks
           terraform plan
+
+      - name: Step 2.3 - Terraform Apply
+        run: |
+          cd eks
           terraform apply -auto-approve
 
-      - name: Create KUBECONFIG for kubectl
+  # =========================================================
+  # STAGE 3: KUBERNETES DEPLOYMENT & WORKLOAD CONFIGURATION
+  # =========================================================
+  kubernetes-deployment-stage:
+    name: "Stage 3: K8s Cluster Config & App Deploy"
+    needs: terraform-infrastructure-stage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Step 3.1 - Update Kubeconfig
         run: |
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
 
-      - name: Join the Worker Nodes
+      - name: Step 3.2 - Join Worker Nodes (aws-auth)
         run: |
           cd eks
           NODE_ROLE_ARN=$(terraform output -raw NodeInstanceRole)
@@ -49,15 +118,21 @@ jobs:
           sed -i "s|<ARN of instance role (not instance profile)>|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml
           kubectl apply -f aws-auth-cm.yaml
 
-      - name: Verify the Nodes
+      - name: Step 3.3 - Inject Dynamic ECR Image Path
         run: |
-          echo "Waiting 60 seconds for worker nodes to join..."
-          sleep 60
-          kubectl get node -o wide
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
+          sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
 
-      - name: Deploy Kubernetes Manifests
+      - name: Step 3.4 - Deploy Security Controls & App Manifests
         run: |
+          kubectl apply -f eks/k8s/base-setup.yaml
+          kubectl apply -f eks/k8s/rbac.yaml
+          kubectl apply -f eks/k8s/network-policy.yaml
           kubectl apply -f eks/k8s/app/deployment.yaml
           kubectl apply -f eks/k8s/app/service.yaml
           kubectl apply -f eks/k8s/app/hpa.yaml
+
+      - name: Step 3.5 - Verify Rollout Status
+        run: |
           kubectl rollout status deployment/prod-app --timeout=180s
