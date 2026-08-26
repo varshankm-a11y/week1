@@ -2,11 +2,11 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: prod-app
-  namespace: default
+  namespace: prod-apps
   labels:
     app: prod-app
 spec:
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels:
       app: prod-app
@@ -20,6 +20,7 @@ spec:
         image: nginx:latest
         ports:
         - containerPort: 80
+        # Resource Requests & Limits
         resources:
           requests:
             cpu: "100m"
@@ -27,6 +28,7 @@ spec:
           limits:
             cpu: "500m"
             memory: "512Mi"
+        # Health Probes Configuration
         livenessProbe:
           httpGet:
             path: /
@@ -39,3 +41,13 @@ spec:
             port: 80
           initialDelaySeconds: 5
           periodSeconds: 10
+        # ConfigMap & Secret Integration
+        envFrom:
+        - configMapRef:
+            name: prod-app-config
+        env:
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: prod-app-secret
+              key: API_KEY
