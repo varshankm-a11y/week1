@@ -98,6 +98,11 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
+      - name: Setup Helm CLI
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.12.0'
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -117,19 +122,34 @@ jobs:
           sed -i "s|<ARN of instance role (not instance profile)>|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml
           kubectl apply -f aws-auth-cm.yaml
 
-      - name: Step 3.3 - Inject Dynamic ECR Image Path
+      - name: Step 3.3 - Install Metrics Server & Prometheus/Grafana Stack
+        run: |
+          # 1. Install Metrics Server for HPA pod metrics gathering
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+          
+          # 2. Add Prometheus Helm repo & Install Prometheus/Grafana Stack
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          kubectl create ns monitoring --dry-run=client -o yaml | kubectl apply -f -
+          
+          helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --set grafana.enabled=true \
+            --set prometheus.prometheusSpec.scrapeInterval="15s"
+
+      - name: Step 3.4 - Inject Dynamic ECR Image Path
         run: |
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
           sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
 
-      - name: Step 3.4 - Deploy Base Setup & Security Controls
+      - name: Step 3.5 - Deploy Base Setup & Security Controls
         run: |
           kubectl apply -f eks/k8s/base-setup.yaml
           kubectl apply -f eks/k8s/rbac.yaml
           kubectl apply -f eks/k8s/network-policy.yaml
 
-      - name: Step 3.5 - Deploy App Configs & Workloads
+      - name: Step 3.6 - Deploy App Configs, Workloads & HPA
         run: |
           kubectl apply -f eks/k8s/app/configmap.yaml
           kubectl apply -f eks/k8s/app/secret.yaml
@@ -139,6 +159,6 @@ jobs:
           kubectl apply -f eks/k8s/app/hpa.yaml
           kubectl apply -f eks/k8s/app/ingress.yaml
 
-      - name: Step 3.6 - Verify Rollout Status
+      - name: Step 3.7 - Verify Rollout Status
         run: |
           kubectl rollout status deployment/prod-app -n prod-apps --timeout=180s
