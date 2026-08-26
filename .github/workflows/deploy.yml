@@ -123,21 +123,17 @@ jobs:
           ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
           sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
 
-      - name: Step 3.4 - Deploy Cluster Base & Security Controls
+      - name: Step 3.4 - Deploy Base Setup & Security Controls
         run: |
-          # 1. Create Namespace & Base SA first
           kubectl apply -f eks/k8s/base-setup.yaml
-          # 2. Apply Security Policies
           kubectl apply -f eks/k8s/rbac.yaml
           kubectl apply -f eks/k8s/network-policy.yaml
 
-      - name: Step 3.5 - Deploy App Configurations & Workloads
+      - name: Step 3.5 - Deploy App Configs & Workloads
         run: |
-          # 3. Apply Configs, Secrets & Resource Boundaries
           kubectl apply -f eks/k8s/app/configmap.yaml
           kubectl apply -f eks/k8s/app/secret.yaml
           kubectl apply -f eks/k8s/app/resource-limits.yaml
-          # 4. Apply Deployment, Service, HPA & Ingress
           kubectl apply -f eks/k8s/app/deployment.yaml
           kubectl apply -f eks/k8s/app/service.yaml
           kubectl apply -f eks/k8s/app/hpa.yaml
