@@ -87,7 +87,7 @@ jobs:
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           BUCKET_NAME="eks-tfstate-${AWS_ACCOUNT_ID}"
           
-          if ! aws s3api head-bucket --bucket "${BUCKET_NAME}" 2>/dev/null; then
+          if ! aws s3api head-bucket --bucket "${BUCKET_NAME}" 2>/devnull; then
             echo "S3 bucket ${BUCKET_NAME} does not exist. Creating..."
             aws s3api create-bucket --bucket "${BUCKET_NAME}" --region ${{ env.AWS_REGION }}
             aws s3api put-bucket-versioning --bucket "${BUCKET_NAME}" --versioning-configuration Status=Enabled
@@ -212,8 +212,8 @@ jobs:
           # Create environment namespace
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
 
-          # Dynamic sed replacement: strips hardcoded 'namespace: prod-apps' lines from app YAMLs
-          sed -i "s|namespace: prod-apps|namespace: ${TARGET_NS}|g" eks/k8s/app/*.yaml
+          # Robust sed: deletes ANY line containing 'namespace:' from app manifests so kubectl -n overrides seamlessly
+          sed -i '/namespace:/d' eks/k8s/app/*.yaml
 
           # Apply manifests dynamically into target namespace
           kubectl apply -f eks/k8s/app/configmap.yaml -n ${TARGET_NS}
