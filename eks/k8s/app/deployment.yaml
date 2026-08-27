@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: prod-app
-  namespace: prod-apps
   labels:
     app: prod-app
 spec:

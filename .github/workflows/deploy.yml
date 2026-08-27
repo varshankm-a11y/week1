@@ -19,6 +19,9 @@ env:
   ECR_REPOSITORY: ${{ github.event.inputs.environment }}-app-repo
 
 jobs:
+  # =========================================================
+  # STAGE 1: APP BUILD, TEST & DOCKER IMAGE PUSH
+  # =========================================================
   app-ci-stage:
     name: "Stage 1: App Test, Build & Push (${{ github.event.inputs.environment }})"
     runs-on: ubuntu-latest
@@ -53,6 +56,9 @@ jobs:
           docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
           docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
 
+  # =========================================================
+  # STAGE 2: TERRAFORM PROVISIONING (INIT, PLAN, APPLY)
+  # =========================================================
   terraform-infrastructure-stage:
     name: "Stage 2: Terraform Infrastructure (${{ github.event.inputs.environment }})"
     needs: app-ci-stage
@@ -116,6 +122,9 @@ jobs:
           NODE_ROLE=$(terraform output -raw NodeInstanceRole)
           echo "node_role_arn=${NODE_ROLE}" >> $GITHUB_OUTPUT
 
+  # =========================================================
+  # STAGE 3: KUBERNETES DEPLOYMENT & WORKLOAD CONFIGURATION
+  # =========================================================
   kubernetes-deployment-stage:
     name: "Stage 3: K8s Cluster Config & App Deploy (${{ github.event.inputs.environment }})"
     needs: terraform-infrastructure-stage
@@ -189,25 +198,23 @@ jobs:
           kubectl apply -f eks/k8s/network-policy.yaml
           kubectl apply -f eks/k8s/logging-fluentbit.yaml
 
-      - name: Step 3.5 - Deploy App Workloads via Kustomize Overrides
+      - name: Step 3.5 - Deploy App Workloads to Selected Environment Namespace
         run: |
           TARGET_NS="${{ github.event.inputs.environment }}-apps"
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
 
-          # 1. Create target namespace
+          # 1. Create target environment namespace
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
 
-          # 2. Dynamically update kustomization.yaml with target namespace and image
-          cd eks/k8s/app
-          kubectl kustomize .
-          
-          # Use kustomize edit to dynamically set target namespace & image
-          kustomize edit set namespace ${TARGET_NS}
-          kustomize edit set image nginx:latest=${ECR_IMAGE}
+          # 2. Ensure namespace lines are removed before deployment
+          sed -i '/^[[:space:]]*namespace:/d' eks/k8s/app/*.yaml
 
-          # 3. Apply via Kustomize (forcefully overrides internal manifest namespaces)
-          kubectl apply -k .
+          # 3. Inject dynamic ECR image path
+          sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
+
+          # 4. Apply manifests explicitly into the target namespace
+          kubectl apply -f eks/k8s/app/ -n ${TARGET_NS}
 
       - name: Step 3.6 - Verify Rollout Status
         run: |
