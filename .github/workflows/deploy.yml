@@ -82,24 +82,43 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Step 2.1 - Terraform Init
+      - name: Step 2.1 - Bootstrap S3 State Bucket & Inject backend.tf
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET_NAME="eks-tfstate-${AWS_ACCOUNT_ID}"
+          
+          # Check if bucket exists, create if missing
+          if ! aws s3api head-bucket --bucket "${BUCKET_NAME}" 2>/dev/null; then
+            echo "S3 bucket ${BUCKET_NAME} does not exist. Creating..."
+            aws s3api create-bucket --bucket "${BUCKET_NAME}" --region ${{ env.AWS_REGION }}
+            aws s3api put-bucket-versioning --bucket "${BUCKET_NAME}" --versioning-configuration Status=Enabled
+          else
+            echo "S3 bucket ${BUCKET_NAME} already exists."
+          fi
+
+          # Dynamically replace PLACEHOLDER_BUCKET in eks/backend.tf with actual bucket name
+          sed -i "s|PLACEHOLDER_BUCKET|${BUCKET_NAME}|g" eks/backend.tf
+          cat eks/backend.tf
+
+      - name: Step 2.2 - Terraform Init & Select Workspace
         run: |
           cd eks
           chmod +x check-environment.sh
           source check-environment.sh
           terraform init
+          terraform workspace select -or-create ${{ github.event.inputs.environment }}
 
-      - name: Step 2.2 - Terraform Plan
+      - name: Step 2.3 - Terraform Plan
         run: |
           cd eks
           terraform plan -var="cluster_name=${{ env.EKS_CLUSTER_NAME }}"
 
-      - name: Step 2.3 - Terraform Apply
+      - name: Step 2.4 - Terraform Apply
         run: |
           cd eks
           terraform apply -auto-approve -var="cluster_name=${{ env.EKS_CLUSTER_NAME }}"
 
-      - name: Step 2.4 - Export Node Role ARN Output
+      - name: Step 2.5 - Export Node Role ARN Output
         id: tf-output
         run: |
           cd eks
@@ -192,10 +211,8 @@ jobs:
         run: |
           TARGET_NS="${{ github.event.inputs.environment }}-apps"
           
-          # Create environment namespace dynamically
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
 
-          # Apply workloads dynamically to selected environment namespace
           kubectl apply -f eks/k8s/app/configmap.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/secret.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/resource-limits.yaml -n ${TARGET_NS}
