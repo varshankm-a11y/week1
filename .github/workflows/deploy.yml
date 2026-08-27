@@ -209,13 +209,13 @@ jobs:
         run: |
           TARGET_NS="${{ github.event.inputs.environment }}-apps"
           
-          # 1. Create environment namespace dynamically
+          # Create environment namespace
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
 
-          # 2. Dynamically replace hardcoded namespace in manifest files with selected target environment
+          # Dynamic sed replacement: strips hardcoded 'namespace: prod-apps' lines from app YAMLs
           sed -i "s|namespace: prod-apps|namespace: ${TARGET_NS}|g" eks/k8s/app/*.yaml
 
-          # 3. Apply manifests safely into target environment namespace
+          # Apply manifests dynamically into target namespace
           kubectl apply -f eks/k8s/app/configmap.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/secret.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/resource-limits.yaml -n ${TARGET_NS}
