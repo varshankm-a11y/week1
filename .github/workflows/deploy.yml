@@ -15,7 +15,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  EKS_CLUSTER_NAME: ${{ github.event.inputs.environment }}-eks
+  EKS_CLUSTER_NAME: demo-eks
   ECR_REPOSITORY: ${{ github.event.inputs.environment }}-app-repo
 
 jobs:
@@ -190,14 +190,21 @@ jobs:
 
       - name: Step 3.6 - Deploy App Configs, Workloads & HPA
         run: |
-          kubectl apply -f eks/k8s/app/configmap.yaml
-          kubectl apply -f eks/k8s/app/secret.yaml
-          kubectl apply -f eks/k8s/app/resource-limits.yaml
-          kubectl apply -f eks/k8s/app/deployment.yaml
-          kubectl apply -f eks/k8s/app/service.yaml
-          kubectl apply -f eks/k8s/app/hpa.yaml
-          kubectl apply -f eks/k8s/app/ingress.yaml
+          TARGET_NS="${{ github.event.inputs.environment }}-apps"
+          
+          # Create environment namespace dynamically
+          kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
+
+          # Apply workloads dynamically to selected environment namespace
+          kubectl apply -f eks/k8s/app/configmap.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/secret.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/resource-limits.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/deployment.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/service.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/hpa.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/ingress.yaml -n ${TARGET_NS}
 
       - name: Step 3.7 - Verify Rollout Status
         run: |
-          kubectl rollout status deployment/prod-app -n prod-apps --timeout=180s
+          TARGET_NS="${{ github.event.inputs.environment }}-apps"
+          kubectl rollout status deployment/prod-app -n ${TARGET_NS} --timeout=180s
