@@ -207,14 +207,20 @@ jobs:
           # 1. Create target environment namespace
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
 
-          # 2. Ensure namespace lines are removed before deployment
+          # 2. Strip namespace declarations dynamically
           sed -i '/^[[:space:]]*namespace:/d' eks/k8s/app/*.yaml
 
           # 3. Inject dynamic ECR image path
           sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
 
-          # 4. Apply manifests explicitly into the target namespace
-          kubectl apply -f eks/k8s/app/ -n ${TARGET_NS}
+          # 4. Apply explicit application manifest files into target namespace
+          kubectl apply -f eks/k8s/app/configmap.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/secret.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/resource-limits.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/deployment.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/service.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/hpa.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/ingress.yaml -n ${TARGET_NS}
 
       - name: Step 3.6 - Verify Rollout Status
         run: |
