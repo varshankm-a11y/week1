@@ -19,9 +19,6 @@ env:
   ECR_REPOSITORY: ${{ github.event.inputs.environment }}-app-repo
 
 jobs:
-  # =========================================================
-  # STAGE 1: APP BUILD, TEST & DOCKER IMAGE PUSH
-  # =========================================================
   app-ci-stage:
     name: "Stage 1: App Test, Build & Push (${{ github.event.inputs.environment }})"
     runs-on: ubuntu-latest
@@ -56,9 +53,6 @@ jobs:
           docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
           docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
 
-  # =========================================================
-  # STAGE 2: TERRAFORM PROVISIONING (INIT, PLAN, APPLY)
-  # =========================================================
   terraform-infrastructure-stage:
     name: "Stage 2: Terraform Infrastructure (${{ github.event.inputs.environment }})"
     needs: app-ci-stage
@@ -122,9 +116,6 @@ jobs:
           NODE_ROLE=$(terraform output -raw NodeInstanceRole)
           echo "node_role_arn=${NODE_ROLE}" >> $GITHUB_OUTPUT
 
-  # =========================================================
-  # STAGE 3: KUBERNETES DEPLOYMENT & WORKLOAD CONFIGURATION
-  # =========================================================
   kubernetes-deployment-stage:
     name: "Stage 3: K8s Cluster Config & App Deploy (${{ github.event.inputs.environment }})"
     needs: terraform-infrastructure-stage
@@ -165,21 +156,18 @@ jobs:
           helm repo add fluent https://fluent.github.io/helm-charts
           helm repo update
 
-          # Metrics Server
           helm upgrade --install metrics-server metrics-server/metrics-server \
             --namespace kube-system \
             --set args={--kubelet-insecure-tls}
 
           sleep 10
 
-          # Prometheus Stack
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
             --set grafana.enabled=true \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
 
-          # 1. Clean Elasticsearch Installation
           helm upgrade --install elasticsearch elastic/elasticsearch \
             --namespace logging \
             --create-namespace \
@@ -190,7 +178,6 @@ jobs:
             --set resources.requests.memory="512Mi" \
             --wait
 
-          # 2. Clean Kibana Installation
           helm upgrade --install kibana elastic/kibana \
             --namespace logging \
             --create-namespace \
@@ -200,8 +187,7 @@ jobs:
             --set createSecret=false \
             --wait
 
-          # 3. Clean Fluent Bit Installation (Refers directly to standard K8s Secret)
-          cat <<EOF > /tmp/fluent-bit-values.yaml
+          cat <<'VALUES_EOF' > /tmp/fluent-bit-values.yaml
           env:
             - name: ELASTIC_PASSWORD
               valueFrom:
@@ -217,12 +203,12 @@ jobs:
                   Host elasticsearch-master.logging.svc.cluster.local
                   Port 9200
                   HTTP_User elastic
-                  HTTP_Passwd \${ELASTIC_PASSWORD}
+                  HTTP_Passwd ${ELASTIC_PASSWORD}
                   tls On
                   tls.verify Off
                   Suppress_Type_Name On
                   Index fluent-bit
-          EOF
+          VALUES_EOF
 
           helm upgrade --install fluent-bit fluent/fluent-bit \
             --namespace logging \
@@ -241,16 +227,10 @@ jobs:
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
 
-          # 1. Create target environment namespace
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
-
-          # 2. Strip namespace declarations dynamically
           sed -i '/^[[:space:]]*namespace:/d' eks/k8s/app/*.yaml
-
-          # 3. Inject dynamic ECR image path
           sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
 
-          # 4. Apply explicit application manifest files into target namespace
           kubectl apply -f eks/k8s/app/configmap.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/secret.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/resource-limits.yaml -n ${TARGET_NS}
