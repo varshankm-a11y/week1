@@ -212,8 +212,10 @@ jobs:
 
           helm upgrade --install fluent-bit fluent/fluent-bit \
             --namespace logging \
-            -f /tmp/fluent-bit-values.yaml \
-            --wait
+            -f /tmp/fluent-bit-values.yaml
+
+          kubectl rollout restart daemonset/fluent-bit -n logging
+          kubectl rollout status daemonset/fluent-bit -n logging --timeout=180s
 
       - name: Step 3.4 - Deploy Base Setup & Security Controls
         run: |
