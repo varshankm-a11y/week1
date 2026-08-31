@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-prometheus-kube-prometheus-alertmanager
+  namespace: monitoring
+type: Opaque
+stringData:
+  alertmanager.yaml: |
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'namespace', 'severity']
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 2h
+      receiver: 'warning-channel'
+      routes:
+        - match:
+            severity: critical
+          receiver: 'critical-channel'
+        - match:
+            severity: warning
+          receiver: 'warning-channel'
+    receivers:
+    - name: 'critical-channel'
+      webhook_configs:
+      - url: 'http://localhost:8080/critical-receiver'
+    - name: 'warning-channel'
+      webhook_configs:
+      - url: 'http://localhost:8080/warning-receiver'
