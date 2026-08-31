@@ -196,6 +196,15 @@ jobs:
                   key: password
 
           config:
+            inputs: |
+              [INPUT]
+                  Name tail
+                  Path /var/log/containers/*.log
+                  multiline.parser docker, cri
+                  Tag kube.*
+                  Mem_Buf_Limit 10MB
+                  Skip_Long_Lines On
+
             outputs: |
               [OUTPUT]
                   Name es
@@ -207,7 +216,11 @@ jobs:
                   tls On
                   tls.verify Off
                   Suppress_Type_Name On
-                  Index fluent-bit
+                  Logstash_Format On
+                  Logstash_Prefix fluent-bit
+                  Replace_Dots On
+                  Retry_Limit 5
+                  net.connect_timeout 10
           VALUES_EOF
 
           helm upgrade --install fluent-bit fluent/fluent-bit \
