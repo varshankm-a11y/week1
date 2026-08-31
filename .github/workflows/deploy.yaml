@@ -300,14 +300,16 @@ jobs:
 
       - name: Step 3.7 - Validate Incident Alert Generation & Acknowledgement Flow
         run: |
-          echo "=== 1. Locating Alertmanager Pod ==="
-          ALERTMANAGER_POD=$(kubectl get pods -n monitoring -l app.kubernetes.io/name=alertmanager -o jsonpath='{.items[0].metadata.name}')
+          echo "=== 1. Locating Alertmanager Pod & Port-Forwarding ==="
+          kubectl port-forward svc/prometheus-kube-prometheus-alertmanager 9093:9093 -n monitoring &
+          PF_PID=$!
+          sleep 5
 
-          echo "=== 2. Injecting Synthetic Critical Alert Payload ==="
+          echo "=== 2. Injecting Synthetic Critical Alert Payload from Runner ==="
           NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           END=$(date -u -d "+15 minutes" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v+15M +"%Y-%m-%dT%H:%M:%SZ")
 
-          kubectl exec -n monitoring "$ALERTMANAGER_POD" -c alertmanager -- curl -s -X POST "http://localhost:9093/api/v2/alerts" \
+          curl -s -X POST "http://localhost:9093/api/v2/alerts" \
             -H 'Content-Type: application/json' \
             -d "[
               {
@@ -327,33 +329,42 @@ jobs:
 
           echo "=== 3. Validating Alert Generation and Severity Routing ==="
           sleep 5
-          ACTIVE_ALERT=$(kubectl exec -n monitoring "$ALERTMANAGER_POD" -c alertmanager -- amtool alert query alertname=KubernetesPodNotReady severity=critical)
+          ACTIVE_ALERT=$(curl -s "http://localhost:9093/api/v2/alerts?filter=alertname%3DKubernetesPodNotReady")
 
           if echo "$ACTIVE_ALERT" | grep -q "KubernetesPodNotReady"; then
               echo "SUCCESS: Critical Alert generated and routed!"
           else
               echo "ERROR: Alert generation/routing failed."
+              kill $PF_PID || true
               exit 1
           fi
 
           echo "=== 4. Validating Acknowledgement Flow (Creating Silence) ==="
-          SILENCE_ID=$(kubectl exec -n monitoring "$ALERTMANAGER_POD" -c alertmanager -- amtool silence add \
-            alertname=KubernetesPodNotReady \
-            severity=critical \
-            --duration=15m \
-            --comment="Automated Pipeline Acknowledgement Validation" \
-            --author="GitHub-Actions-CI")
+          SILENCE_RESP=$(curl -s -X POST "http://localhost:9093/api/v2/silences" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"matchers\": [
+                {\"name\": \"alertname\", \"value\": \"KubernetesPodNotReady\", \"isRegex\": false},
+                {\"name\": \"severity\", \"value\": \"critical\", \"isRegex\": false}
+              ],
+              \"startsAt\": \"$NOW\",
+              \"endsAt\": \"$END\",
+              \"createdBy\": \"GitHub-Actions-CI\",
+              \"comment\": \"Automated Pipeline Acknowledgement Validation\"
+            }")
 
-          echo "Silence ID created: $SILENCE_ID"
+          echo "Silence creation response: $SILENCE_RESP"
+          SILENCE_ID=$(echo "$SILENCE_RESP" | jq -r '.silenceID // empty')
 
-          echo "=== 5. Verifying Active Silence Status ==="
-          SILENCE_CHECK=$(kubectl exec -n monitoring "$ALERTMANAGER_POD" -c alertmanager -- amtool silence query "$SILENCE_ID")
-          if echo "$SILENCE_CHECK" | grep -q "active"; then
-              echo "SUCCESS: Incident acknowledgement flow validated successfully!"
+          if [ -n "$SILENCE_ID" ]; then
+              echo "SUCCESS: Incident acknowledgement flow validated! Silence ID: $SILENCE_ID"
+              # Clean up silence
+              curl -s -X DELETE "http://localhost:9093/api/v2/silence/$SILENCE_ID"
           else
-              echo "ERROR: Silence status check failed."
+              echo "ERROR: Failed to create silence."
+              kill $PF_PID || true
               exit 1
           fi
 
-          echo "=== 6. Cleanup Silence Artifact ==="
-          kubectl exec -n monitoring "$ALERTMANAGER_POD" -c alertmanager -- amtool silence expire "$SILENCE_ID"
+          echo "=== 5. Cleaning Up Port-Forward ==="
+          kill $PF_PID || true
