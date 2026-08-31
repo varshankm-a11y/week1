@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-observability-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  cluster-observability.json: |-
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "title": "Cluster & Application Observability Overview",
+      "timezone": "browser",
+      "panels": [
+        {
+          "title": "Cluster Node Availability",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+          "targets": [{ "expr": "sum(kube_node_status_condition{condition=\"Ready\",status=\"true\"})" }]
+        },
+        {
+          "title": "Application Availability (Running Pods)",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+          "targets": [{ "expr": "sum(kube_pod_status_phase{phase=\"Running\"})" }]
+        },
+        {
+          "title": "Pod Restarts (Last 1 Hour)",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+          "targets": [{ "expr": "sum(increase(kube_pod_container_status_restarts_total[1h]))" }]
+        },
+        {
+          "title": "HTTP 5xx Error Rate (%)",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+          "targets": [{ "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m])) * 100" }]
+        },
+        {
+          "title": "CPU Usage vs Limits",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+          "targets": [{ "expr": "sum(rate(container_cpu_usage_seconds_total{container!=\"\"}[5m])) by (pod)" }]
+        },
+        {
+          "title": "Memory Usage (Working Set)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+          "targets": [{ "expr": "sum(container_memory_working_set_bytes{container!=\"\"}) by (pod)" }]
+        },
+        {
+          "title": "Application Latency (p95)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+          "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))" }]
+        },
+        {
+          "title": "Node Memory Pressure",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+          "targets": [{ "expr": "100 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100)" }]
+        }
+      ]
+    }
