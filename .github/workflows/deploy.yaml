@@ -233,7 +233,7 @@ jobs:
             inputs: |
               [INPUT]
                   Name tail
-                  Path /var/log/containers/*.log
+                  Path /var/log/containers/prod-app-*_*.log
                   multiline.parser docker, cri
                   Tag kube.*
                   Mem_Buf_Limit 10MB
@@ -307,7 +307,7 @@ jobs:
 
           echo "=== 2. Injecting Synthetic Critical Alert Payload from Runner ==="
           NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          END=$(date -u -d "+15 minutes" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v+15M +"%Y-%m-%dT%H:%M:%SZ")
+          END=$(date -u -d "+15 minutes" +"%Y-%m-%dT%H:%M:%SZ" 2>/devnull || date -u -v+15M +"%Y-%m-%dT%H:%M:%SZ")
 
           curl -s -X POST "http://localhost:9093/api/v2/alerts" \
             -H 'Content-Type: application/json' \
