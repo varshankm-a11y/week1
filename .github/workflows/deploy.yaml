@@ -293,10 +293,19 @@ jobs:
           kubectl apply -f eks/k8s/app/hpa.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/ingress.yaml -n ${TARGET_NS}
 
-      - name: Step 3.6 - Verify Rollout Status
+      - name: Step 3.6 - Verify Rollout Status & Auto-Rollback on Failure
         run: |
           TARGET_NS="${{ github.event.inputs.environment }}-apps"
-          kubectl rollout status deployment/prod-app -n ${TARGET_NS} --timeout=180s
+          echo "=== Verifying Deployment Rollout Status in ${TARGET_NS} ==="
+          
+          if ! kubectl rollout status deployment/prod-app -n ${TARGET_NS} --timeout=180s; then
+            echo "::error::Deployment rollout failed or timed out! Executing automated rollback..."
+            kubectl rollout undo deployment/prod-app -n ${TARGET_NS}
+            kubectl rollout status deployment/prod-app -n ${TARGET_NS}
+            exit 1
+          else
+            echo "SUCCESS: Deployment rollout completed successfully!"
+          fi
 
       - name: Step 3.7 - Validate Incident Alert Generation & Acknowledgement Flow
         run: |
