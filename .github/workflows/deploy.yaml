@@ -316,7 +316,7 @@ jobs:
 
           echo "=== 2. Injecting Synthetic Critical Alert Payload from Runner ==="
           NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          END=$(date -u -d "+15 minutes" +"%Y-%m-%dT%H:%M:%SZ" 2>/devnull || date -u -v+15M +"%Y-%m-%dT%H:%M:%SZ")
+          END=$(date -u -d "+15 minutes" +"%Y-%m-%dT%H:%M:%SZ")
 
           curl -s -X POST "http://localhost:9093/api/v2/alerts" \
             -H 'Content-Type: application/json' \
