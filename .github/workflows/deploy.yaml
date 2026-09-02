@@ -251,30 +251,46 @@ jobs:
           config:
             inputs: |
               [INPUT]
-                  Name tail
-                  Path /var/log/containers/prod-app-*_demo-apps_*.log
-                  multiline.parser docker, cri
-                  Tag kube.*
-                  Mem_Buf_Limit 15MB
-                  Skip_Long_Lines On
-                  Refresh_Interval 5
-                  Read_From_Head True
+                  Name              tail
+                  Path              /var/log/containers/*.log
+                  multiline.parser  docker, cri
+                  Tag               kube.*
+                  Mem_Buf_Limit     15MB
+                  Skip_Long_Lines   On
+                  Refresh_Interval  5
+                  Read_From_Head    True
+
+            filters: |
+              [FILTER]
+                  Name                kubernetes
+                  Match               kube.*
+                  Kube_URL            https://kubernetes.default.svc:443
+                  Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                  Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+                  Kube_Tag_Prefix     kube.var.log.containers.
+                  Merge_Log           On
+                  Keep_Log            Off
+
+              [FILTER]
+                  Name    grep
+                  Match   kube.*
+                  Exclude $kubernetes['namespace_name'] ^(default|kube-system|monitoring|logging|kube-node-lease|kube-public)$
 
             outputs: |
               [OUTPUT]
-                  Name es
-                  Match *
-                  Host elasticsearch-master.logging.svc.cluster.local
-                  Port 9200
-                  HTTP_User elastic
-                  HTTP_Passwd ${ELASTIC_PASSWORD}
-                  tls On
-                  tls.verify Off
+                  Name            es
+                  Match           kube.*
+                  Host            elasticsearch-master.logging.svc.cluster.local
+                  Port            9200
+                  HTTP_User       elastic
+                  HTTP_Passwd     ${ELASTIC_PASSWORD}
+                  tls             On
+                  tls.verify      Off
                   Suppress_Type_Name On
                   Logstash_Format On
-                  Logstash_Prefix fluent-bit-demo-apps
-                  Replace_Dots On
-                  Retry_Limit False
+                  Logstash_Prefix fluent-bit-app-logs
+                  Replace_Dots    On
+                  Retry_Limit     False
                   net.connect_timeout 10
           VALUES_EOF
 
