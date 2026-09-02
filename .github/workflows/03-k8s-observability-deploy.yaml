@@ -44,7 +44,6 @@ jobs:
 
       - name: Step 3.2 - Join Worker Nodes (aws-auth)
         run: |
-          # Query AWS IAM directly for the EKS Node Group Role ARN
           NODE_ROLE_ARN=$(aws iam list-roles --query "Roles[?contains(RoleName, '${{ env.EKS_CLUSTER_NAME }}') && contains(RoleName, 'node')].Arn" --output text | head -n 1)
           
           if [ -n "$NODE_ROLE_ARN" ]; then
@@ -64,39 +63,16 @@ jobs:
           helm repo add fluent https://fluent.github.io/helm-charts
           helm repo update
 
-          # Upgrade metrics-server with required EKS IP resolution flags
-          helm upgrade --install metrics-server metrics-server/metrics-server \
-            --namespace kube-system \
-            --set args={--kubelet-insecure-tls,--kubelet-preferred-address-types=InternalIP}
+          helm upgrade --install metrics-server metrics-server/metrics-server --namespace kube-system --set args={--kubelet-insecure-tls,--kubelet-preferred-address-types=InternalIP}
 
-          # Ensure metrics-server deployment is 1/1 READY before Helm attempts API discovery
           kubectl rollout status deployment/metrics-server -n kube-system --timeout=120s
           sleep 10
 
-          helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
-            --namespace monitoring \
-            --create-namespace \
-            --set grafana.enabled=true \
-            --set prometheus.prometheusSpec.scrapeInterval="15s"
+          helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace monitoring --create-namespace --set grafana.enabled=true --set prometheus.prometheusSpec.scrapeInterval="15s"
 
-          helm upgrade --install elasticsearch elastic/elasticsearch \
-            --namespace logging \
-            --create-namespace \
-            --set persistence.enabled=false \
-            --set replicas=1 \
-            --set minimumMasterNodes=1 \
-            --set resources.requests.cpu="100m" \
-            --set resources.requests.memory="512Mi" \
-            --wait
+          helm upgrade --install elasticsearch elastic/elasticsearch --namespace logging --create-namespace --set persistence.enabled=false --set replicas=1 --set minimumMasterNodes=1 --set resources.requests.cpu="100m" --set resources.requests.memory="512Mi" --wait
 
-          helm upgrade --install kibana elastic/kibana \
-            --namespace logging \
-            --create-namespace \
-            --set resources.requests.cpu="100m" \
-            --set resources.requests.memory="512Mi" \
-            --set elasticsearchHosts="https://elasticsearch-master:9200" \
-            --set createSecret=false \
-            --wait
+          helm upgrade --install kibana elastic/kibana --namespace logging --create-namespace --set resources.requests.cpu="100m" --set resources.requests.memory="512Mi" --set elasticsearchHosts="https://elasticsearch-master:9200" --set createSecret=false --wait
 
           cat <<'VALUES_EOF' > /tmp/fluent-bit-values.yaml
           env:
@@ -152,9 +128,7 @@ jobs:
                   net.connect_timeout 10
           VALUES_EOF
 
-          helm upgrade --install fluent-bit fluent/fluent-bit \
-            --namespace logging \
-            -f /tmp/fluent-bit-values.yaml
+          helm upgrade --install fluent-bit fluent/fluent-bit --namespace logging -f /tmp/fluent-bit-values.yaml
 
           kubectl rollout restart daemonset/fluent-bit -n logging
           kubectl rollout status daemonset/fluent-bit -n logging --timeout=180s
