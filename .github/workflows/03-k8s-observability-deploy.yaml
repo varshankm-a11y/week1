@@ -1,4 +1,4 @@
-name: Manual - Provision & Deploy Pipeline
+name: 03 - K8s Cluster Config & App Deploy
 
 on:
   workflow_dispatch:
@@ -19,159 +19,8 @@ env:
   ECR_REPOSITORY: ${{ github.event.inputs.environment }}-app-repo
 
 jobs:
-  # =========================================================
-  # STAGE 1: APP BUILD, TEST, SECURITY SCANNING & ECR PUSH
-  # =========================================================
-  app-ci-stage:
-    name: "Stage 1: App Security Scan, Build & Push (${{ github.event.inputs.environment }})"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Source Code
-        uses: actions/checkout@v4
-
-      - name: Step 1.1 - Run Application Unit Tests
-        run: |
-          echo "Running application tests for environment: ${{ github.event.inputs.environment }}"
-
-      - name: Step 1.2 - Scan Application Dependencies (Trivy fs)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: 'CRITICAL,HIGH'
-
-      - name: Step 1.3 - Build Local Docker Image for Scanning
-        run: |
-          docker build -t local-test-image:${{ github.sha }} .
-
-      - name: Step 1.4 - Scan Container Image (Trivy image)
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: 'local-test-image:${{ github.sha }}'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: 'CRITICAL,HIGH'
-          output: 'trivy-report.txt'
-
-      - name: Step 1.4.1 - Print & Publish Vulnerability Report on Failure
-        if: failure()
-        run: |
-          echo "======================================================="
-          echo "       TRIVY CONTAINER VULNERABILITY REPORT           "
-          echo "======================================================="
-          if [ -f trivy-report.txt ]; then
-            cat trivy-report.txt
-            
-            # Publish directly to GitHub Actions Summary tab
-            echo "## 🛡️ Security Gate Triggered: Vulnerable Image Rejected" >> $GITHUB_STEP_SUMMARY
-            echo "```text" >> $GITHUB_STEP_SUMMARY
-            cat trivy-report.txt >> $GITHUB_STEP_SUMMARY
-            echo "```" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "No report file found."
-          fi
-
-      - name: Step 1.5 - Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Step 1.6 - Log in to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Step 1.7 - Tag & Push Docker Image to ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} || \
-          aws ecr create-repository --repository-name ${{ env.ECR_REPOSITORY }}
-
-          docker tag local-test-image:${{ github.sha }} ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
-          docker tag local-test-image:${{ github.sha }} ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
-
-          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
-          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
-
-  # =========================================================
-  # STAGE 2: TERRAFORM PROVISIONING (INIT, PLAN, APPLY)
-  # =========================================================
-  terraform-infrastructure-stage:
-    name: "Stage 2: Terraform Infrastructure (${{ github.event.inputs.environment }})"
-    needs: app-ci-stage
-    runs-on: ubuntu-latest
-    outputs:
-      node_role_arn: ${{ steps.tf-output.outputs.node_role_arn }}
-    steps:
-      - name: Checkout Source Code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform CLI
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.5.0
-          terraform_wrapper: false
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Step 2.1 - Bootstrap S3 State Bucket & Inject backend.tf
-        run: |
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          BUCKET_NAME="eks-tfstate-${AWS_ACCOUNT_ID}"
-          
-          if ! aws s3api head-bucket --bucket "${BUCKET_NAME}" 2>/devnull; then
-            echo "S3 bucket ${BUCKET_NAME} does not exist. Creating..."
-            aws s3api create-bucket --bucket "${BUCKET_NAME}" --region ${{ env.AWS_REGION }}
-            aws s3api put-bucket-versioning --bucket "${BUCKET_NAME}" --versioning-configuration Status=Enabled
-          else
-            echo "S3 bucket ${BUCKET_NAME} already exists."
-          fi
-
-          sed -i "s|PLACEHOLDER_BUCKET|${BUCKET_NAME}|g" eks/backend.tf
-
-      - name: Step 2.2 - Terraform Init & Select Workspace
-        run: |
-          cd eks
-          chmod +x check-environment.sh
-          source check-environment.sh
-          terraform init
-          terraform workspace select -or-create ${{ github.event.inputs.environment }}
-
-      - name: Step 2.3 - Terraform Plan
-        run: |
-          cd eks
-          terraform plan -var="cluster_name=${{ env.EKS_CLUSTER_NAME }}"
-
-      - name: Step 2.4 - Terraform Apply
-        run: |
-          cd eks
-          terraform apply -auto-approve -var="cluster_name=${{ env.EKS_CLUSTER_NAME }}"
-
-      - name: Step 2.5 - Export Node Role ARN Output
-        id: tf-output
-        run: |
-          cd eks
-          NODE_ROLE=$(terraform output -raw NodeInstanceRole)
-          echo "node_role_arn=${NODE_ROLE}" >> $GITHUB_OUTPUT
-
-  # =========================================================
-  # STAGE 3: KUBERNETES DEPLOYMENT & WORKLOAD CONFIGURATION
-  # =========================================================
   kubernetes-deployment-stage:
-    name: "Stage 3: K8s Cluster Config & App Deploy (${{ github.event.inputs.environment }})"
-    needs: terraform-infrastructure-stage
+    name: "K8s Cluster Config & App Deploy (${{ github.event.inputs.environment }})"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
@@ -194,12 +43,14 @@ jobs:
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
 
       - name: Step 3.2 - Join Worker Nodes (aws-auth)
-        env:
-          NODE_ROLE_ARN: ${{ needs.terraform-infrastructure-stage.outputs.node_role_arn }}
         run: |
-          curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/cloudformation/2020-10-29/aws-auth-cm.yaml
-          sed -i "s|<ARN of instance role (not instance profile)>|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml
-          kubectl apply -f aws-auth-cm.yaml
+          cd eks
+          NODE_ROLE_ARN=$(terraform output -raw NodeInstanceRole 2>/devnull || echo "")
+          if [ -n "$NODE_ROLE_ARN" ]; then
+            curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/cloudformation/2020-10-29/aws-auth-cm.yaml
+            sed -i "s|<ARN of instance role (not instance profile)>|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml
+            kubectl apply -f aws-auth-cm.yaml
+          fi
 
       - name: Step 3.3 - Install Metrics Server, Observability & Logging Stack
         run: |
@@ -307,7 +158,6 @@ jobs:
           kubectl apply -f eks/k8s/rbac.yaml
           kubectl apply -f eks/k8s/network-policy.yaml
           
-          # AUTOMATED OBSERVABILITY & ALERT ROUTING DEPLOYMENT
           kubectl apply -f eks/k8s/observability/prometheus-rules.yaml
           kubectl apply -f eks/k8s/observability/grafana-dashboard-cm.yaml
           kubectl apply -f eks/k8s/observability/alertmanager-routing.yaml
@@ -404,7 +254,6 @@ jobs:
 
           if [ -n "$SILENCE_ID" ]; then
               echo "SUCCESS: Incident acknowledgement flow validated! Silence ID: $SILENCE_ID"
-              # Clean up silence
               curl -s -X DELETE "http://localhost:9093/api/v2/silence/$SILENCE_ID"
           else
               echo "ERROR: Failed to create silence."

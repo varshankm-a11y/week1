@@ -1,0 +1,81 @@
+name: 02 - Provision Terraform Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        description: 'Target Environment'
+        required: true
+        default: 'demo'
+        options:
+          - demo
+          - test
+          - prod
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: demo-eks
+
+jobs:
+  terraform-infrastructure-stage:
+    name: "Terraform Infrastructure (${{ github.event.inputs.environment }})"
+    runs-on: ubuntu-latest
+    outputs:
+      node_role_arn: ${{ steps.tf-output.outputs.node_role_arn }}
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform CLI
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+          terraform_wrapper: false
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Step 2.1 - Bootstrap S3 State Bucket & Inject backend.tf
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET_NAME="eks-tfstate-${AWS_ACCOUNT_ID}"
+          
+          if ! aws s3api head-bucket --bucket "${BUCKET_NAME}" 2>/devnull; then
+            echo "S3 bucket ${BUCKET_NAME} does not exist. Creating..."
+            aws s3api create-bucket --bucket "${BUCKET_NAME}" --region ${{ env.AWS_REGION }}
+            aws s3api put-bucket-versioning --bucket "${BUCKET_NAME}" --versioning-configuration Status=Enabled
+          else
+            echo "S3 bucket ${BUCKET_NAME} already exists."
+          fi
+
+          sed -i "s|PLACEHOLDER_BUCKET|${BUCKET_NAME}|g" eks/backend.tf
+
+      - name: Step 2.2 - Terraform Init & Select Workspace
+        run: |
+          cd eks
+          chmod +x check-environment.sh
+          source check-environment.sh
+          terraform init
+          terraform workspace select -or-create ${{ github.event.inputs.environment }}
+
+      - name: Step 2.3 - Terraform Plan
+        run: |
+          cd eks
+          terraform plan -var="cluster_name=${{ env.EKS_CLUSTER_NAME }}"
+
+      - name: Step 2.4 - Terraform Apply
+        run: |
+          cd eks
+          terraform apply -auto-approve -var="cluster_name=${{ env.EKS_CLUSTER_NAME }}"
+
+      - name: Step 2.5 - Export Node Role ARN Output
+        id: tf-output
+        run: |
+          cd eks
+          NODE_ROLE=$(terraform output -raw NodeInstanceRole)
+          echo "node_role_arn=${NODE_ROLE}" >> $GITHUB_OUTPUT
