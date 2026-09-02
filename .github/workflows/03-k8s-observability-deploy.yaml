@@ -62,7 +62,6 @@ jobs:
 
       - name: Step 3.3.2 - Install Metrics Server
         run: |
-          kubectl get apiservice v1beta1.metrics.k8s.io -o json 2>/devnull | jq '.metadata.finalizers = []' | kubectl replace -f - 2>/devnull || true
           kubectl delete apiservice v1beta1.metrics.k8s.io --wait=false --ignore-not-found=true
 
           helm upgrade --install metrics-server metrics-server/metrics-server \
@@ -73,17 +72,13 @@ jobs:
 
       - name: Step 3.3.3 - Install Prometheus Stack
         run: |
-          # Clear only pending-state release locks so Helm retains release history
-          kubectl delete secret -n monitoring -l "owner=helm,name=prometheus,status=pending-upgrade" --ignore-not-found=true
-          kubectl delete secret -n monitoring -l "owner=helm,name=prometheus,status=pending-install" --ignore-not-found=true
+          # Delete any leftover release secrets in monitoring namespace to reset release history
+          kubectl delete secret -n monitoring -l "owner=helm,name=prometheus" --ignore-not-found=true
 
-          # Install/upgrade with skip-crds and take-ownership to bypass lingering resource conflicts
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
             --skip-crds \
-            --take-ownership \
-            --disable-openapi-validation \
             --set grafana.enabled=true \
             --set prometheus.prometheusSpec.scrapeInterval="15s" \
             --set prometheus.prometheusSpec.resources.requests.cpu="100m" \
