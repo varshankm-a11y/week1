@@ -69,7 +69,6 @@ jobs:
 
           kubectl delete secret -n monitoring -l "owner=helm,name=prometheus" --ignore-not-found=true
 
-          # Trim Prometheus resource footprint
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
@@ -79,7 +78,6 @@ jobs:
             --set prometheus.prometheusSpec.resources.requests.memory="256Mi" \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
 
-          # Trim Elasticsearch JVM heap and request minimal resources (100m CPU / 256Mi RAM)
           helm upgrade --install elasticsearch elastic/elasticsearch \
             --namespace logging \
             --create-namespace \
@@ -93,7 +91,6 @@ jobs:
             --set resources.limits.cpu="500m" \
             --set resources.limits.memory="512Mi"
 
-          # Trim Kibana memory requirements
           helm upgrade --install kibana elastic/kibana \
             --namespace logging \
             --create-namespace \
@@ -187,7 +184,6 @@ jobs:
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
           sed -i '/^[[:space:]]*namespace:/d' eks/k8s/app/*.yaml
 
-          # Verify ECR image exists; fallback only if tag isn't pushed yet
           if ! aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=latest --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
             echo "WARNING: ECR image not found! Falling back to nginx:latest for demo..."
             ECR_IMAGE="nginx:latest"
