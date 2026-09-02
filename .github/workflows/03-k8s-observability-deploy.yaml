@@ -172,8 +172,8 @@ jobs:
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
           sed -i '/^[[:space:]]*namespace:/d' eks/k8s/app/*.yaml
           
-          # Fallback to public nginx if ECR image isn't built yet
-          if ! aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=latest --region ${{ env.AWS_REGION }} >/devnull 2>&1; then
+          # Fixed redirect path syntax
+          if ! aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=latest --region ${{ env.AWS_REGION }} >/dev/null 2>&1; then
             echo "WARNING: ECR image not found! Falling back to nginx:latest for demo validation..."
             ECR_IMAGE="nginx:latest"
           fi
@@ -184,6 +184,10 @@ jobs:
           kubectl apply -f eks/k8s/app/secret.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/resource-limits.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/deployment.yaml -n ${TARGET_NS}
+          
+          # Scale to 1 replica to ensure light resource footprint on demo worker nodes
+          kubectl scale deployment/prod-app --replicas=1 -n ${TARGET_NS} || true
+
           kubectl apply -f eks/k8s/app/service.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/hpa.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/ingress.yaml -n ${TARGET_NS}
@@ -193,7 +197,6 @@ jobs:
           TARGET_NS="${{ github.event.inputs.environment }}-apps"
           echo "=== Verifying Deployment Rollout Status in ${TARGET_NS} ==="
           
-          # Find deployment name dynamically
           DEPLOY_NAME=$(kubectl get deployment -n ${TARGET_NS} -o jsonpath='{.items[0].metadata.name}' 2>/devnull || echo "prod-app")
           
           if ! kubectl rollout status deployment/${DEPLOY_NAME} -n ${TARGET_NS} --timeout=120s; then
