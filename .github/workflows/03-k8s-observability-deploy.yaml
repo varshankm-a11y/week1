@@ -77,6 +77,7 @@ jobs:
           helm upgrade --install elasticsearch elastic/elasticsearch \
             --namespace logging \
             --create-namespace \
+            --no-hooks \
             --set persistence.enabled=false \
             --set replicas=1 \
             --set minimumMasterNodes=1 \
@@ -86,6 +87,7 @@ jobs:
           helm upgrade --install kibana elastic/kibana \
             --namespace logging \
             --create-namespace \
+            --no-hooks \
             --set resources.requests.cpu="100m" \
             --set resources.requests.memory="512Mi" \
             --set elasticsearchHosts="https://elasticsearch-master:9200" \
