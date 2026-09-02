@@ -60,10 +60,14 @@ jobs:
           helm repo add fluent https://fluent.github.io/helm-charts
           helm repo update
 
-      - name: Step 3.3.2 - Install Metrics Server
+      - name: Step 3.3.2 - Install Metrics Server (EKS HostNetwork Enabled)
         run: |
+          # Delete stuck metrics-server deployment to clear blocked rollout state
+          kubectl delete deployment metrics-server -n kube-system --ignore-not-found=true
+
           helm upgrade --install metrics-server metrics-server/metrics-server \
             --namespace kube-system \
+            --set hostNetwork.enabled=true \
             --set args="{--kubelet-insecure-tls,--kubelet-preferred-address-types=InternalIP}"
 
           kubectl rollout status deployment/metrics-server -n kube-system --timeout=120s
