@@ -55,6 +55,25 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
+          output: 'trivy-report.txt'
+
+      - name: Step 1.4.1 - Print & Publish Vulnerability Report on Failure
+        if: failure()
+        run: |
+          echo "======================================================="
+          echo "       TRIVY CONTAINER VULNERABILITY REPORT           "
+          echo "======================================================="
+          if [ -f trivy-report.txt ]; then
+            cat trivy-report.txt
+            
+            # Publish directly to GitHub Actions Summary tab
+            echo "## 🛡️ Security Gate Triggered: Vulnerable Image Rejected" >> $GITHUB_STEP_SUMMARY
+            echo "```text" >> $GITHUB_STEP_SUMMARY
+            cat trivy-report.txt >> $GITHUB_STEP_SUMMARY
+            echo "```" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No report file found."
+          fi
 
       - name: Step 1.5 - Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -233,11 +252,13 @@ jobs:
             inputs: |
               [INPUT]
                   Name tail
-                  Path /var/log/containers/prod-app-*_*.log
+                  Path /var/log/containers/prod-app-*_demo-apps_*.log
                   multiline.parser docker, cri
                   Tag kube.*
-                  Mem_Buf_Limit 10MB
+                  Mem_Buf_Limit 15MB
                   Skip_Long_Lines On
+                  Refresh_Interval 5
+                  Read_From_Head True
 
             outputs: |
               [OUTPUT]
@@ -251,9 +272,9 @@ jobs:
                   tls.verify Off
                   Suppress_Type_Name On
                   Logstash_Format On
-                  Logstash_Prefix fluent-bit
+                  Logstash_Prefix fluent-bit-demo-apps
                   Replace_Dots On
-                  Retry_Limit 5
+                  Retry_Limit False
                   net.connect_timeout 10
           VALUES_EOF
 
