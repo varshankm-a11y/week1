@@ -172,22 +172,21 @@ jobs:
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
           sed -i '/^[[:space:]]*namespace:/d' eks/k8s/app/*.yaml
           
-          # Fixed redirect path syntax
-          if ! aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=latest --region ${{ env.AWS_REGION }} >/dev/null 2>&1; then
+          # Fix redirection path syntax
+          if ! aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=latest --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
             echo "WARNING: ECR image not found! Falling back to nginx:latest for demo validation..."
             ECR_IMAGE="nginx:latest"
           fi
 
+          # Patch deployment image and force replicas=1 to fit worker node memory limits
           sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
+          sed -i 's|replicas: .*|replicas: 1|g' eks/k8s/app/deployment.yaml
+          sed -i 's|minReplicas: .*|minReplicas: 1|g' eks/k8s/app/hpa.yaml
 
           kubectl apply -f eks/k8s/app/configmap.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/secret.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/resource-limits.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/deployment.yaml -n ${TARGET_NS}
-          
-          # Scale to 1 replica to ensure light resource footprint on demo worker nodes
-          kubectl scale deployment/prod-app --replicas=1 -n ${TARGET_NS} || true
-
           kubectl apply -f eks/k8s/app/service.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/hpa.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/ingress.yaml -n ${TARGET_NS}
