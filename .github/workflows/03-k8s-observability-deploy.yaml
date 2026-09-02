@@ -74,8 +74,8 @@ jobs:
             --create-namespace \
             --no-hooks \
             --set grafana.enabled=true \
-            --set prometheus.prometheusSpec.resources.requests.cpu="50m" \
-            --set prometheus.prometheusSpec.resources.requests.memory="256Mi" \
+            --set prometheus.prometheusSpec.resources.requests.cpu="10m" \
+            --set prometheus.prometheusSpec.resources.requests.memory="128Mi" \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
 
           helm upgrade --install elasticsearch elastic/elasticsearch \
@@ -85,18 +85,18 @@ jobs:
             --set persistence.enabled=false \
             --set replicas=1 \
             --set minimumMasterNodes=1 \
-            --set esJavaOpts="-Xms256m -Xmx256m" \
-            --set resources.requests.cpu="100m" \
-            --set resources.requests.memory="256Mi" \
-            --set resources.limits.cpu="500m" \
-            --set resources.limits.memory="512Mi"
+            --set esJavaOpts="-Xms128m -Xmx128m" \
+            --set resources.requests.cpu="10m" \
+            --set resources.requests.memory="128Mi" \
+            --set resources.limits.cpu="200m" \
+            --set resources.limits.memory="256Mi"
 
           helm upgrade --install kibana elastic/kibana \
             --namespace logging \
             --create-namespace \
             --no-hooks \
-            --set resources.requests.cpu="50m" \
-            --set resources.requests.memory="256Mi" \
+            --set resources.requests.cpu="10m" \
+            --set resources.requests.memory="128Mi" \
             --set elasticsearchHosts="https://elasticsearch-master:9200" \
             --set createSecret=false
 
@@ -110,8 +110,8 @@ jobs:
 
           resources:
             requests:
-              cpu: 20m
-              memory: 64Mi
+              cpu: 10m
+              memory: 32Mi
 
           config:
             inputs: |
