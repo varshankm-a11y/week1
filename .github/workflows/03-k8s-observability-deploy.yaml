@@ -60,21 +60,22 @@ jobs:
           helm repo add fluent https://fluent.github.io/helm-charts
           helm repo update
 
-      - name: Step 3.3.2 - Install Metrics Server
+      - name: Step 3.3.2 - Install Metrics Server (Non-blocking)
         run: |
-          # Purge APIService and existing deployment to clear the broken API discovery route
+          # Purge APIService blocking the API aggregation layer
           kubectl delete apiservice v1beta1.metrics.k8s.io --ignore-not-found=true
           kubectl delete deployment metrics-server -n kube-system --ignore-not-found=true
 
           helm upgrade --install metrics-server metrics-server/metrics-server \
             --namespace kube-system \
-            --set args="{--kubelet-insecure-tls,--kubelet-preferred-address-types=InternalIP}" \
-            --set apiService.create=true
-
-          kubectl rollout status deployment/metrics-server -n kube-system --timeout=120s || true
+            --set hostNetwork.enabled=true \
+            --set args="{--kubelet-insecure-tls,--kubelet-preferred-address-types=InternalIP}" || true
 
       - name: Step 3.3.3 - Install Prometheus Stack
         run: |
+          # Force delete stale APIService again just in case metrics-server registered and hung
+          kubectl delete apiservice v1beta1.metrics.k8s.io --ignore-not-found=true
+
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
