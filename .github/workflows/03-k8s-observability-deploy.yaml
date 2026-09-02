@@ -177,7 +177,11 @@ jobs:
             ECR_IMAGE="nginx:latest"
           fi
 
+          # Force deployment and HPA to 1 replica to prevent node memory exhaustion
           sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
+          sed -i 's|replicas: .*|replicas: 1|g' eks/k8s/app/deployment.yaml
+          sed -i 's|minReplicas: .*|minReplicas: 1|g' eks/k8s/app/hpa.yaml
+          sed -i 's|maxReplicas: .*|maxReplicas: 1|g' eks/k8s/app/hpa.yaml
 
           kubectl apply -f eks/k8s/app/configmap.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/secret.yaml -n ${TARGET_NS}
@@ -192,10 +196,9 @@ jobs:
           TARGET_NS="${{ github.event.inputs.environment }}-apps"
           echo "=== Verifying Deployment Rollout Status in ${TARGET_NS} ==="
           
-          if ! kubectl rollout status deployment/prod-app -n ${TARGET_NS} --timeout=180s; then
+          if ! kubectl rollout status deployment/prod-app -n ${TARGET_NS} --timeout=120s; then
             echo "::error::Deployment rollout failed or timed out! Executing automated rollback..."
-            kubectl rollout undo deployment/prod-app -n ${TARGET_NS}
-            kubectl rollout status deployment/prod-app -n ${TARGET_NS}
+            kubectl rollout undo deployment/prod-app -n ${TARGET_NS} || kubectl delete deployment/prod-app -n ${TARGET_NS}
             exit 1
           else
             echo "SUCCESS: Deployment rollout completed successfully!"
