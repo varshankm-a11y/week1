@@ -171,12 +171,13 @@ jobs:
 
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
           sed -i '/^[[:space:]]*namespace:/d' eks/k8s/app/*.yaml
-          
-          # Use nginx:latest directly for fast demo verification
-          sed -i "s|image: nginx:latest|image: nginx:latest|g" eks/k8s/app/deployment.yaml
-          sed -i 's|replicas: .*|replicas: 1|g' eks/k8s/app/deployment.yaml
-          sed -i 's|minReplicas: .*|minReplicas: 1|g' eks/k8s/app/hpa.yaml
-          sed -i 's|maxReplicas: .*|maxReplicas: 1|g' eks/k8s/app/hpa.yaml
+
+          # Fallback to public nginx if ECR image doesn't exist
+          if ! aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=latest --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
+            ECR_IMAGE="nginx:latest"
+          fi
+
+          sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
 
           kubectl apply -f eks/k8s/app/configmap.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/secret.yaml -n ${TARGET_NS}
@@ -191,11 +192,10 @@ jobs:
           TARGET_NS="${{ github.event.inputs.environment }}-apps"
           echo "=== Verifying Deployment Rollout Status in ${TARGET_NS} ==="
           
-          DEPLOY_NAME=$(kubectl get deployment -n ${TARGET_NS} -o jsonpath='{.items[0].metadata.name}' 2>/devnull || echo "prod-app")
-          
-          if ! kubectl rollout status deployment/${DEPLOY_NAME} -n ${TARGET_NS} --timeout=120s; then
+          if ! kubectl rollout status deployment/prod-app -n ${TARGET_NS} --timeout=180s; then
             echo "::error::Deployment rollout failed or timed out! Executing automated rollback..."
-            kubectl rollout undo deployment/${DEPLOY_NAME} -n ${TARGET_NS} || kubectl delete deployment/${DEPLOY_NAME} -n ${TARGET_NS}
+            kubectl rollout undo deployment/prod-app -n ${TARGET_NS}
+            kubectl rollout status deployment/prod-app -n ${TARGET_NS}
             exit 1
           else
             echo "SUCCESS: Deployment rollout completed successfully!"
@@ -237,7 +237,36 @@ jobs:
           if echo "$ACTIVE_ALERT" | grep -q "KubernetesPodNotReady"; then
               echo "SUCCESS: Critical Alert generated and routed!"
           else
-              echo "WARNING: Alertmanager synthetic test skipped."
+              echo "ERROR: Alert generation/routing failed."
+              kill $PF_PID || true
+              exit 1
           fi
 
+          echo "=== 4. Validating Acknowledgement Flow (Creating Silence) ==="
+          SILENCE_RESP=$(curl -s -X POST "http://localhost:9093/api/v2/silences" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"matchers\": [
+                {\"name\": \"alertname\", \"value\": \"KubernetesPodNotReady\", \"isRegex\": false},
+                {\"name\": \"severity\", \"value\": \"critical\", \"isRegex\": false}
+              ],
+              \"startsAt\": \"$NOW\",
+              \"endsAt\": \"$END\",
+              \"createdBy\": \"GitHub-Actions-CI\",
+              \"comment\": \"Automated Pipeline Acknowledgement Validation\"
+            }")
+
+          echo "Silence creation response: $SILENCE_RESP"
+          SILENCE_ID=$(echo "$SILENCE_RESP" | jq -r '.silenceID // empty')
+
+          if [ -n "$SILENCE_ID" ]; then
+              echo "SUCCESS: Incident acknowledgement flow validated! Silence ID: $SILENCE_ID"
+              curl -s -X DELETE "http://localhost:9093/api/v2/silence/$SILENCE_ID"
+          else
+              echo "ERROR: Failed to create silence."
+              kill $PF_PID || true
+              exit 1
+          fi
+
+          echo "=== 5. Cleaning Up Port-Forward ==="
           kill $PF_PID || true
