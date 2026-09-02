@@ -73,20 +73,21 @@ jobs:
 
       - name: Step 3.3.3 - Install Prometheus Stack
         run: |
-          # Purge any remaining pending secrets
-          kubectl delete secret -n monitoring -l "owner=helm,name=prometheus" --ignore-not-found=true
+          # Clear only pending-state release locks so Helm retains release history
+          kubectl delete secret -n monitoring -l "owner=helm,name=prometheus,status=pending-upgrade" --ignore-not-found=true
+          kubectl delete secret -n monitoring -l "owner=helm,name=prometheus,status=pending-install" --ignore-not-found=true
 
-          # Install without blocking CLI on pod initialization
+          # Install/upgrade with skip-crds and take-ownership to bypass lingering resource conflicts
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
+            --skip-crds \
+            --take-ownership \
+            --disable-openapi-validation \
             --set grafana.enabled=true \
             --set prometheus.prometheusSpec.scrapeInterval="15s" \
             --set prometheus.prometheusSpec.resources.requests.cpu="100m" \
             --set prometheus.prometheusSpec.resources.requests.memory="256Mi"
-
-          # Wait explicitly for operator deployment only
-          kubectl rollout status deployment/prometheus-kube-prometheus-operator -n monitoring --timeout=120s || true
 
       - name: Step 3.3.4 - Install Elasticsearch & Kibana Logging Stack
         run: |
@@ -168,7 +169,6 @@ jobs:
             -f /tmp/fluent-bit-values.yaml
 
           kubectl rollout restart daemonset/fluent-bit -n logging
-          kubectl rollout status daemonset/fluent-bit -n logging --timeout=180s || true
 
       - name: Step 3.4 - Deploy Base Setup, Security Controls & Observability Resources
         run: |
