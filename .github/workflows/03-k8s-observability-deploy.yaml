@@ -44,12 +44,16 @@ jobs:
 
       - name: Step 3.2 - Join Worker Nodes (aws-auth)
         run: |
-          cd eks
-          NODE_ROLE_ARN=$(terraform output -raw NodeInstanceRole 2>/devnull || echo "")
+          # Query AWS IAM directly for the EKS Node Group Role ARN
+          NODE_ROLE_ARN=$(aws iam list-roles --query "Roles[?contains(RoleName, '${{ env.EKS_CLUSTER_NAME }}') && contains(RoleName, 'node')].Arn" --output text | head -n 1)
+          
           if [ -n "$NODE_ROLE_ARN" ]; then
+            echo "Found Node Role ARN: ${NODE_ROLE_ARN}"
             curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/cloudformation/2020-10-29/aws-auth-cm.yaml
             sed -i "s|<ARN of instance role (not instance profile)>|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml
             kubectl apply -f aws-auth-cm.yaml
+          else
+            echo "WARNING: Could not automatically detect Node Role ARN from AWS IAM."
           fi
 
       - name: Step 3.3 - Install Metrics Server, Observability & Logging Stack
@@ -60,14 +64,14 @@ jobs:
           helm repo add fluent https://fluent.github.io/helm-charts
           helm repo update
 
+          # Upgrade metrics-server with required EKS IP resolution flags
           helm upgrade --install metrics-server metrics-server/metrics-server \
             --namespace kube-system \
-            --set args={--kubelet-insecure-tls}
+            --set args={--kubelet-insecure-tls,--kubelet-preferred-address-types=InternalIP}
 
-          # Ensure metrics-server pod is fully ready before Helm proceeds
+          # Ensure metrics-server deployment is 1/1 READY before Helm attempts API discovery
           kubectl rollout status deployment/metrics-server -n kube-system --timeout=120s
-          kubectl get apiservice v1beta1.metrics.k8s.io || true
-          sleep 15
+          sleep 10
 
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
