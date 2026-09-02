@@ -72,13 +72,13 @@ jobs:
 
       - name: Step 3.3.3 - Install Prometheus Stack
         run: |
-          # Delete any leftover release secrets in monitoring namespace to reset release history
+          # Clear stale release secret locks
           kubectl delete secret -n monitoring -l "owner=helm,name=prometheus" --ignore-not-found=true
 
+          # Install full stack including CRDs
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
-            --skip-crds \
             --set grafana.enabled=true \
             --set prometheus.prometheusSpec.scrapeInterval="15s" \
             --set prometheus.prometheusSpec.resources.requests.cpu="100m" \
