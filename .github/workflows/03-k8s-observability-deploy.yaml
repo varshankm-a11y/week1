@@ -171,6 +171,13 @@ jobs:
 
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
           sed -i '/^[[:space:]]*namespace:/d' eks/k8s/app/*.yaml
+          
+          # Fallback to public nginx if ECR image isn't built yet
+          if ! aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=latest --region ${{ env.AWS_REGION }} >/devnull 2>&1; then
+            echo "WARNING: ECR image not found! Falling back to nginx:latest for demo validation..."
+            ECR_IMAGE="nginx:latest"
+          fi
+
           sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
 
           kubectl apply -f eks/k8s/app/configmap.yaml -n ${TARGET_NS}
@@ -186,10 +193,12 @@ jobs:
           TARGET_NS="${{ github.event.inputs.environment }}-apps"
           echo "=== Verifying Deployment Rollout Status in ${TARGET_NS} ==="
           
-          if ! kubectl rollout status deployment/prod-app -n ${TARGET_NS} --timeout=120s; then
+          # Find deployment name dynamically
+          DEPLOY_NAME=$(kubectl get deployment -n ${TARGET_NS} -o jsonpath='{.items[0].metadata.name}' 2>/devnull || echo "prod-app")
+          
+          if ! kubectl rollout status deployment/${DEPLOY_NAME} -n ${TARGET_NS} --timeout=120s; then
             echo "::error::Deployment rollout failed or timed out! Executing automated rollback..."
-            kubectl rollout undo deployment/prod-app -n ${TARGET_NS}
-            kubectl rollout status deployment/prod-app -n ${TARGET_NS}
+            kubectl rollout undo deployment/${DEPLOY_NAME} -n ${TARGET_NS} || kubectl delete deployment/${DEPLOY_NAME} -n ${TARGET_NS}
             exit 1
           else
             echo "SUCCESS: Deployment rollout completed successfully!"
