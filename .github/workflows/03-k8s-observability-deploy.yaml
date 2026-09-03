@@ -67,17 +67,17 @@ jobs:
 
           kubectl delete secret -n monitoring -l "owner=helm,name=prometheus" --ignore-not-found=true
 
-          # Deploy Prometheus with minimal footprint
+          # Deploy Prometheus & Alertmanager with minimal footprint
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
             --no-hooks \
             --set grafana.enabled=true \
+            --set alertmanager.enabled=true \
             --set prometheus.prometheusSpec.resources.requests.cpu="10m" \
             --set prometheus.prometheusSpec.resources.requests.memory="128Mi" \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
 
-          # Clean up any legacy elasticsearch pods left in logging namespace
           kubectl delete ns logging --ignore-not-found=true --wait=false
 
       - name: Step 3.4 - Deploy Base Setup, Security Controls & Observability Resources
@@ -116,25 +116,28 @@ jobs:
 
       - name: Step 3.6 - Validate Incident Alert Generation & Acknowledgement Flow
         run: |
-          echo "=== 1. Locating Alertmanager Pod & Port-Forwarding ==="
-          kubectl port-forward svc/prometheus-kube-prometheus-alertmanager 9093:9093 -n monitoring &
+          echo "=== 1. Dynamically Locating Alertmanager Service & Port-Forwarding ==="
+          AM_SVC=$(kubectl get svc -n monitoring -l app.kubernetes.io/name=alertmanager -o jsonpath='{.items[0].metadata.name}' || echo "prometheus-kube-prometheus-alertmanager")
+          echo "Targeting Alertmanager service: ${AM_SVC}"
+
+          kubectl port-forward svc/${AM_SVC} 9093:9093 -n monitoring &
           PF_PID=$!
           
-          # Poll local port 9093 until ready (up to 30s)
-          for i in {1..30}; do
-            if curl -s http://localhost:9093/-/ready > /dev/null; then
-              echo "Alertmanager port-forward ready on port 9093!"
+          # Poll port 9093
+          for i in {1..20}; do
+            if curl -s http://127.0.0.1:9093/-/ready > /dev/null 2>&1; then
+              echo "Alertmanager port-forward active on 127.0.0.1:9093!"
               break
             fi
             echo "Waiting for port 9093 to open..."
-            sleep 1
+            sleep 2
           done
 
           echo "=== 2. Injecting Synthetic Critical Alert Payload from Runner ==="
           NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           END=$(date -u -d "+15 minutes" +"%Y-%m-%dT%H:%M:%SZ")
 
-          curl -s -X POST "http://localhost:9093/api/v2/alerts" \
+          curl -s -X POST "http://127.0.0.1:9093/api/v2/alerts" \
             -H 'Content-Type: application/json' \
             -d "[
               {
@@ -154,7 +157,7 @@ jobs:
 
           echo "=== 3. Validating Alert Generation and Severity Routing ==="
           sleep 3
-          ACTIVE_ALERT=$(curl -s "http://localhost:9093/api/v2/alerts?filter=alertname%3DKubernetesPodNotReady")
+          ACTIVE_ALERT=$(curl -s "http://127.0.0.1:9093/api/v2/alerts?filter=alertname%3DKubernetesPodNotReady")
 
           if echo "$ACTIVE_ALERT" | grep -q "KubernetesPodNotReady"; then
               echo "SUCCESS: Critical Alert generated and routed!"
@@ -165,7 +168,7 @@ jobs:
           fi
 
           echo "=== 4. Validating Acknowledgement Flow (Creating Silence) ==="
-          SILENCE_RESP=$(curl -s -X POST "http://localhost:9093/api/v2/silences" \
+          SILENCE_RESP=$(curl -s -X POST "http://127.0.0.1:9093/api/v2/silences" \
             -H 'Content-Type: application/json' \
             -d "{
               \"matchers\": [
@@ -183,7 +186,7 @@ jobs:
 
           if [ -n "$SILENCE_ID" ]; then
               echo "SUCCESS: Incident acknowledgement flow validated! Silence ID: $SILENCE_ID"
-              curl -s -X DELETE "http://localhost:9093/api/v2/silence/$SILENCE_ID"
+              curl -s -X DELETE "http://127.0.0.1:9093/api/v2/silence/$SILENCE_ID"
           else
               echo "ERROR: Failed to create silence."
               kill $PF_PID || true
