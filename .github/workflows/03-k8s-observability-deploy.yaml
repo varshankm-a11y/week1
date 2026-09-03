@@ -16,11 +16,10 @@ on:
 env:
   AWS_REGION: us-east-1
   EKS_CLUSTER_NAME: demo-eks
-  ECR_REPOSITORY: ${{ github.event.inputs.environment }}-app-repo
 
 jobs:
   kubernetes-deployment-stage:
-    name: "K8s Cluster Config & App Deploy (${{ github.event.inputs.environment }})"
+    name: "K8s Cluster Config & App Deploy"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
@@ -107,14 +106,20 @@ CMEOF
 
       - name: Step 3.5 - Deploy App Workloads to Selected Environment Namespace
         run: |
-          TARGET_NS="${{ github.event.inputs.environment }}-apps"
+          TARGET_ENV="${{ github.event.inputs.environment }}"
+          if [ -z "$TARGET_ENV" ]; then
+            TARGET_ENV="demo"
+          fi
+          TARGET_NS="${TARGET_ENV}-apps"
+          ECR_REPO="${TARGET_ENV}-app-repo"
+
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
+          ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${ECR_REPO}:latest"
 
           kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
           sed -i '/^[[:space:]]*namespace:/d' eks/k8s/app/*.yaml
 
-          if ! aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=latest --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
+          if ! aws ecr describe-images --repository-name ${ECR_REPO} --image-ids imageTag=latest --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
             echo "WARNING: ECR image not found! Falling back to nginx:alpine..."
             ECR_IMAGE="nginx:alpine"
           fi
@@ -135,7 +140,7 @@ CMEOF
           kubectl get nodes
 
           echo "=== 2. Checking Application Workloads ==="
-          kubectl get pods,svc,hpa,ingress -n ${{ github.event.inputs.environment }}-apps
+          kubectl get pods,svc,hpa,ingress -A
 
           echo "=== 3. Checking Monitoring Stack Status ==="
           kubectl get pods,svc -n monitoring
