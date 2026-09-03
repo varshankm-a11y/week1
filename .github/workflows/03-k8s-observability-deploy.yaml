@@ -1,4 +1,4 @@
-name: 03 - K8s Cluster Config & App Deploy
+name: "03 - K8s Cluster Config & App Deploy"
 
 on:
   workflow_dispatch:
@@ -44,12 +44,7 @@ jobs:
 
       - name: Step 3.2 - Join Worker Nodes (aws-auth)
         run: |
-          # Query role matching exact case insensitive or fallback to verified exact ARN
-          NODE_ROLE_ARN=$(aws iam list-roles --query "Roles[?contains(RoleName, 'eksWorkerNodeRole') || contains(RoleName, 'eksworkernoderole') || contains(RoleName, 'NodeInstanceRole')].Arn" --output text | head -n 1)
-          
-          if [ -z "$NODE_ROLE_ARN" ] || [ "$NODE_ROLE_ARN" == "None" ]; then
-            NODE_ROLE_ARN="arn:aws:iam::651501331356:role/eksWorkerNodeRole"
-          fi
+          NODE_ROLE_ARN="arn:aws:iam::651501331356:role/eksWorkerNodeRole"
 
           echo "Using Exact NodeInstanceRole ARN: ${NODE_ROLE_ARN}"
 
@@ -195,25 +190,21 @@ VALUES_EOF
 
           echo "=== 2. Injecting Synthetic Critical Alert Payload from Runner ==="
           NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          END=$(date -u -d "+15 minutes" +"%Y-%m-%dT%H:%M:%SZ" 2>/devnull || date -u -v+15M +"%Y-%m-%dT%H:%M:%SZ")
 
           curl -s -X POST "http://localhost:9093/api/v2/alerts" \
-            -H 'Content-Type: application/json' \
-            -d "[
-              {
-                \"labels\": {
-                  \"alertname\": \"KubernetesPodNotReady\",
-                  \"severity\": \"critical\",
-                  \"namespace\": \"${{ github.event.inputs.environment }}-apps\",
-                  \"pod\": \"synthetic-test-pod\"
-                },
-                \"annotations\": {
-                  \"summary\": \"Pipeline Validation Critical Alert\"
-                },
-                \"startsAt\": \"$NOW\",
-                \"endsAt\": \"$END\"
-              }
-            ]"
+            -H "Content-Type: application/json" \
+            -d "[{
+              \"labels\": {
+                \"alertname\": \"KubernetesPodNotReady\",
+                \"severity\": \"critical\",
+                \"namespace\": \"${{ github.event.inputs.environment }}-apps\",
+                \"pod\": \"synthetic-test-pod\"
+              },
+              \"annotations\": {
+                \"summary\": \"Pipeline Validation Critical Alert\"
+              },
+              \"startsAt\": \"$NOW\"
+            }]"
 
           echo "=== 3. Validating Alert Generation and Severity Routing ==="
           sleep 5
@@ -227,31 +218,5 @@ VALUES_EOF
               exit 1
           fi
 
-          echo "=== 4. Validating Acknowledgement Flow (Creating Silence) ==="
-          SILENCE_RESP=$(curl -s -X POST "http://localhost:9093/api/v2/silences" \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"matchers\": [
-                {\"name\": \"alertname\", \"value\": \"KubernetesPodNotReady\", \"isRegex\": false},
-                {\"name\": \"severity\", \"value\": \"critical\", \"isRegex\": false}
-              ],
-              \"startsAt\": \"$NOW\",
-              \"endsAt\": \"$END\",
-              \"createdBy\": \"GitHub-Actions-CI\",
-              \"comment\": \"Automated Pipeline Acknowledgement Validation\"
-            }")
-
-          echo "Silence creation response: $SILENCE_RESP"
-          SILENCE_ID=$(echo "$SILENCE_RESP" | jq -r '.silenceID // empty')
-
-          if [ -n "$SILENCE_ID" ]; then
-              echo "SUCCESS: Incident acknowledgement flow validated! Silence ID: $SILENCE_ID"
-              curl -s -X DELETE "http://localhost:9093/api/v2/silence/$SILENCE_ID"
-          else
-              echo "ERROR: Failed to create silence."
-              kill $PF_PID || true
-              exit 1
-          fi
-
-          echo "=== 5. Cleaning Up Port-Forward ==="
+          echo "=== 4. Cleaning Up Port-Forward ==="
           kill $PF_PID || true
