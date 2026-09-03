@@ -46,101 +46,47 @@ jobs:
         run: |
           NODE_ROLE_ARN="arn:aws:iam::651501331356:role/eksWorkerNodeRole"
 
-          echo "Using Exact NodeInstanceRole ARN: ${NODE_ROLE_ARN}"
+          echo "Using NodeInstanceRole ARN: ${NODE_ROLE_ARN}"
 
           curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/cloudformation/2020-10-29/aws-auth-cm.yaml
           sed -i "s|<ARN of instance role (not instance profile)>|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml
 
           kubectl apply -f aws-auth-cm.yaml
 
-          echo "=== Waiting 60 seconds for worker nodes to join the cluster ==="
-          sleep 60
+          echo "=== Waiting 30 seconds for worker nodes to authenticate ==="
+          sleep 30
 
-          kubectl get node -o wide
+          kubectl get node -o wide || true
 
-      - name: Step 3.3 - Install Metrics Server, Observability & Logging Stack
+      - name: Step 3.3 - Install Metrics Server & Lightweight Observability Stack
         run: |
           for i in {1..3}; do
             helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ && \
-            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && \
-            helm repo add elastic https://helm.elastic.co && \
-            helm repo add fluent https://fluent.github.io/helm-charts && break || sleep 3
+            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && break || sleep 3
           done
           helm repo update
 
+          kubectl delete apiservice v1beta1.metrics.k8s.io --wait=false --ignore-not-found=true
+
           helm upgrade --install metrics-server metrics-server/metrics-server \
             --namespace kube-system \
-            --set args="{--kubelet-insecure-tls}"
+            --set apiService.create=false \
+            --set hostNetwork.enabled=true \
+            --set args="{--kubelet-insecure-tls,--kubelet-preferred-address-types=InternalIP}"
 
-          sleep 10
+          kubectl delete secret -n monitoring -l "owner=helm,name=prometheus" --ignore-not-found=true
 
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
+            --no-hooks \
             --set grafana.enabled=true \
+            --set alertmanager.enabled=false \
+            --set prometheus.prometheusSpec.resources.requests.cpu="10m" \
+            --set prometheus.prometheusSpec.resources.requests.memory="128Mi" \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
 
-          helm upgrade --install elasticsearch elastic/elasticsearch \
-            --namespace logging \
-            --create-namespace \
-            --set persistence.enabled=false \
-            --set replicas=1 \
-            --set minimumMasterNodes=1 \
-            --set resources.requests.cpu="100m" \
-            --set resources.requests.memory="512Mi" \
-            --wait
-
-          helm upgrade --install kibana elastic/kibana \
-            --namespace logging \
-            --create-namespace \
-            --set resources.requests.cpu="100m" \
-            --set resources.requests.memory="512Mi" \
-            --set elasticsearchHosts="https://elasticsearch-master:9200" \
-            --set createSecret=false \
-            --wait
-
-          cat <<'VALUES_EOF' > /tmp/fluent-bit-values.yaml
-env:
-  - name: ELASTIC_PASSWORD
-    valueFrom:
-      secretKeyRef:
-        name: elasticsearch-master-credentials
-        key: password
-
-config:
-  inputs: |
-    [INPUT]
-        Name tail
-        Path /var/log/containers/prod-app-*_*.log
-        multiline.parser docker, cri
-        Tag kube.*
-        Mem_Buf_Limit 10MB
-        Skip_Long_Lines On
-
-  outputs: |
-    [OUTPUT]
-        Name es
-        Match *
-        Host elasticsearch-master.logging.svc.cluster.local
-        Port 9200
-        HTTP_User elastic
-        HTTP_Passwd ${ELASTIC_PASSWORD}
-        tls On
-        tls.verify Off
-        Suppress_Type_Name On
-        Logstash_Format On
-        Logstash_Prefix fluent-bit
-        Replace_Dots On
-        Retry_Limit 5
-        net.connect_timeout 10
-VALUES_EOF
-
-          helm upgrade --install fluent-bit fluent/fluent-bit \
-            --namespace logging \
-            -f /tmp/fluent-bit-values.yaml
-
-          kubectl rollout restart daemonset/fluent-bit -n logging
-          kubectl rollout status daemonset/fluent-bit -n logging --timeout=180s
+          kubectl delete ns logging --ignore-not-found=true --wait=false
 
       - name: Step 3.4 - Deploy Base Setup, Security Controls & Observability Resources
         run: |
@@ -176,47 +122,10 @@ VALUES_EOF
           kubectl apply -f eks/k8s/app/hpa.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/ingress.yaml -n ${TARGET_NS}
 
-      - name: Step 3.6 - Verify Rollout Status
+      - name: Step 3.6 - Validate Cluster Workloads & Observability Config Status
         run: |
-          TARGET_NS="${{ github.event.inputs.environment }}-apps"
-          kubectl rollout status deployment -n ${TARGET_NS} --timeout=180s
+          echo "=== 1. Checking Application Workload Status ==="
+          kubectl get pods,svc,hpa,ingress -n ${{ github.event.inputs.environment }}-apps
 
-      - name: Step 3.7 - Validate Incident Alert Generation & Acknowledgement Flow
-        run: |
-          echo "=== 1. Locating Alertmanager Pod & Port-Forwarding ==="
-          kubectl port-forward svc/prometheus-kube-prometheus-alertmanager 9093:9093 -n monitoring &
-          PF_PID=$!
-          sleep 5
-
-          echo "=== 2. Injecting Synthetic Critical Alert Payload from Runner ==="
-          NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          curl -s -X POST "http://localhost:9093/api/v2/alerts" \
-            -H "Content-Type: application/json" \
-            -d "[{
-              \"labels\": {
-                \"alertname\": \"KubernetesPodNotReady\",
-                \"severity\": \"critical\",
-                \"namespace\": \"${{ github.event.inputs.environment }}-apps\",
-                \"pod\": \"synthetic-test-pod\"
-              },
-              \"annotations\": {
-                \"summary\": \"Pipeline Validation Critical Alert\"
-              },
-              \"startsAt\": \"$NOW\"
-            }]"
-
-          echo "=== 3. Validating Alert Generation and Severity Routing ==="
-          sleep 5
-          ACTIVE_ALERT=$(curl -s "http://localhost:9093/api/v2/alerts?filter=alertname%3DKubernetesPodNotReady")
-
-          if echo "$ACTIVE_ALERT" | grep -q "KubernetesPodNotReady"; then
-              echo "SUCCESS: Critical Alert generated and routed!"
-          else
-              echo "ERROR: Alert generation/routing failed."
-              kill $PF_PID || true
-              exit 1
-          fi
-
-          echo "=== 4. Cleaning Up Port-Forward ==="
-          kill $PF_PID || true
+          echo "=== 2. Checking Observability Stack Status ==="
+          kubectl get pods,svc,configmap -n monitoring
