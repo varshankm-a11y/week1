@@ -53,40 +53,92 @@ jobs:
 
           kubectl apply -f aws-auth-cm.yaml
 
-          echo "=== Dynamically waiting up to 5 minutes for all worker nodes to reach Ready state ==="
+          echo "=== Waiting up to 5 minutes for worker nodes to reach Ready state ==="
           kubectl wait --for=condition=Ready nodes --all --timeout=300s
 
           kubectl get node -o wide
 
-      - name: Step 3.3 - Install Metrics Server & Lightweight Observability Stack
+      - name: Step 3.3 - Install Metrics Server, Observability & Logging Stack
         run: |
-          for i in {1..3}; do
-            helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ && \
-            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && break || sleep 3
-          done
+          helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add elastic https://helm.elastic.co
+          helm repo add fluent https://fluent.github.io/helm-charts
           helm repo update
-
-          kubectl delete apiservice v1beta1.metrics.k8s.io --wait=false --ignore-not-found=true
 
           helm upgrade --install metrics-server metrics-server/metrics-server \
             --namespace kube-system \
-            --set apiService.create=false \
-            --set hostNetwork.enabled=true \
-            --set args="{--kubelet-insecure-tls,--kubelet-preferred-address-types=InternalIP}"
+            --set args="{--kubelet-insecure-tls}"
 
-          kubectl delete secret -n monitoring -l "owner=helm,name=prometheus" --ignore-not-found=true
+          sleep 10
 
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
-            --no-hooks \
             --set grafana.enabled=true \
-            --set alertmanager.enabled=false \
-            --set prometheus.prometheusSpec.resources.requests.cpu="10m" \
-            --set prometheus.prometheusSpec.resources.requests.memory="128Mi" \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
 
-          kubectl delete ns logging --ignore-not-found=true --wait=false
+          helm upgrade --install elasticsearch elastic/elasticsearch \
+            --namespace logging \
+            --create-namespace \
+            --set persistence.enabled=false \
+            --set replicas=1 \
+            --set minimumMasterNodes=1 \
+            --set resources.requests.cpu="100m" \
+            --set resources.requests.memory="512Mi" \
+            --wait
+
+          helm upgrade --install kibana elastic/kibana \
+            --namespace logging \
+            --create-namespace \
+            --set resources.requests.cpu="100m" \
+            --set resources.requests.memory="512Mi" \
+            --set elasticsearchHosts="https://elasticsearch-master:9200" \
+            --set createSecret=false \
+            --wait
+
+          cat <<'VALUES_EOF' > /tmp/fluent-bit-values.yaml
+env:
+  - name: ELASTIC_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: elasticsearch-master-credentials
+        key: password
+
+config:
+  inputs: |
+    [INPUT]
+        Name tail
+        Path /var/log/containers/prod-app-*_*.log
+        multiline.parser docker, cri
+        Tag kube.*
+        Mem_Buf_Limit 10MB
+        Skip_Long_Lines On
+
+  outputs: |
+    [OUTPUT]
+        Name es
+        Match *
+        Host elasticsearch-master.logging.svc.cluster.local
+        Port 9200
+        HTTP_User elastic
+        HTTP_Passwd ${ELASTIC_PASSWORD}
+        tls On
+        tls.verify Off
+        Suppress_Type_Name On
+        Logstash_Format On
+        Logstash_Prefix fluent-bit
+        Replace_Dots On
+        Retry_Limit 5
+        net.connect_timeout 10
+VALUES_EOF
+
+          helm upgrade --install fluent-bit fluent/fluent-bit \
+            --namespace logging \
+            -f /tmp/fluent-bit-values.yaml
+
+          kubectl rollout restart daemonset/fluent-bit -n logging
+          kubectl rollout status daemonset/fluent-bit -n logging --timeout=180s
 
       - name: Step 3.4 - Deploy Base Setup, Security Controls & Observability Resources
         run: |
@@ -129,3 +181,6 @@ jobs:
 
           echo "=== 2. Checking Observability Stack Status ==="
           kubectl get pods,svc,configmap -n monitoring
+
+          echo "=== 3. Checking Logging Stack Status ==="
+          kubectl get pods,svc -n logging
