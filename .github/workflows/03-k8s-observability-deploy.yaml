@@ -67,13 +67,15 @@ jobs:
 
           kubectl delete secret -n monitoring -l "owner=helm,name=prometheus" --ignore-not-found=true
 
-          # Deploy Prometheus & Alertmanager with minimal footprint
+          # Deploy Prometheus & Alertmanager explicitly with minimal resource footprints
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
             --no-hooks \
             --set grafana.enabled=true \
             --set alertmanager.enabled=true \
+            --set alertmanager.alertmanagerSpec.resources.requests.cpu="10m" \
+            --set alertmanager.alertmanagerSpec.resources.requests.memory="64Mi" \
             --set prometheus.prometheusSpec.resources.requests.cpu="10m" \
             --set prometheus.prometheusSpec.resources.requests.memory="128Mi" \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
@@ -116,14 +118,27 @@ jobs:
 
       - name: Step 3.6 - Validate Incident Alert Generation & Acknowledgement Flow
         run: |
-          echo "=== 1. Dynamically Locating Alertmanager Service & Port-Forwarding ==="
-          AM_SVC=$(kubectl get svc -n monitoring -l app.kubernetes.io/name=alertmanager -o jsonpath='{.items[0].metadata.name}' || echo "prometheus-kube-prometheus-alertmanager")
-          echo "Targeting Alertmanager service: ${AM_SVC}"
+          echo "=== 1. Locating Alertmanager Service & Port-Forwarding ==="
+          
+          # Wait for Alertmanager service to exist (up to 30s)
+          for i in {1..15}; do
+            AM_SVC=$(kubectl get svc -n monitoring -l app.kubernetes.io/name=alertmanager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+            if [ -n "$AM_SVC" ]; then
+              echo "Found Alertmanager service: ${AM_SVC}"
+              break
+            fi
+            echo "Waiting for Alertmanager service to register..."
+            sleep 2
+          done
+
+          if [ -z "$AM_SVC" ]; then
+            AM_SVC="prometheus-kube-prometheus-alertmanager"
+          fi
 
           kubectl port-forward svc/${AM_SVC} 9093:9093 -n monitoring &
           PF_PID=$!
           
-          # Poll port 9093
+          # Poll port 9093 readiness
           for i in {1..20}; do
             if curl -s http://127.0.0.1:9093/-/ready > /dev/null 2>&1; then
               echo "Alertmanager port-forward active on 127.0.0.1:9093!"
