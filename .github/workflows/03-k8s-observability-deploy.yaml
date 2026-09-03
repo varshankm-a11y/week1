@@ -1,3 +1,4 @@
+# Updated manually for GitHub Actions registration
 name: "03 - K8s Cluster Config & App Deploy"
 
 on:
