@@ -53,10 +53,10 @@ jobs:
 
           kubectl apply -f aws-auth-cm.yaml
 
-          echo "=== Waiting 30 seconds for worker nodes to authenticate ==="
-          sleep 30
+          echo "=== Dynamically waiting up to 5 minutes for all worker nodes to reach Ready state ==="
+          kubectl wait --for=condition=Ready nodes --all --timeout=300s
 
-          kubectl get node -o wide || true
+          kubectl get node -o wide
 
       - name: Step 3.3 - Install Metrics Server & Lightweight Observability Stack
         run: |
