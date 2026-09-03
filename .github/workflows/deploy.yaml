@@ -1,0 +1,416 @@
+name: Manual - Provision & Deploy Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        description: 'Target Environment'
+        required: true
+        default: 'demo'
+        options:
+          - demo
+          - test
+          - prod
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: demo-eks
+  ECR_REPOSITORY: ${{ github.event.inputs.environment }}-app-repo
+
+jobs:
+  # =========================================================
+  # STAGE 1: APP BUILD, TEST, SECURITY SCANNING & ECR PUSH
+  # =========================================================
+  app-ci-stage:
+    name: "Stage 1: App Security Scan, Build & Push (${{ github.event.inputs.environment }})"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Step 1.1 - Run Application Unit Tests
+        run: |
+          echo "Running application tests for environment: ${{ github.event.inputs.environment }}"
+
+      - name: Step 1.2 - Scan Application Dependencies (Trivy fs)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+      - name: Step 1.3 - Build Local Docker Image for Scanning
+        run: |
+          docker build -t local-test-image:${{ github.sha }} .
+
+      - name: Step 1.4 - Scan Container Image (Trivy image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'local-test-image:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+          output: 'trivy-report.txt'
+
+      - name: Step 1.4.1 - Print & Publish Vulnerability Report on Failure
+        if: failure()
+        run: |
+          echo "======================================================="
+          echo "       TRIVY CONTAINER VULNERABILITY REPORT           "
+          echo "======================================================="
+          if [ -f trivy-report.txt ]; then
+            cat trivy-report.txt
+            
+            # Publish directly to GitHub Actions Summary tab
+            echo "## 🛡️ Security Gate Triggered: Vulnerable Image Rejected" >> $GITHUB_STEP_SUMMARY
+            echo "```text" >> $GITHUB_STEP_SUMMARY
+            cat trivy-report.txt >> $GITHUB_STEP_SUMMARY
+            echo "```" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No report file found."
+          fi
+
+      - name: Step 1.5 - Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Step 1.6 - Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Step 1.7 - Tag & Push Docker Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} || \
+          aws ecr create-repository --repository-name ${{ env.ECR_REPOSITORY }}
+
+          docker tag local-test-image:${{ github.sha }} ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+          docker tag local-test-image:${{ github.sha }} ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+
+          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+
+  # =========================================================
+  # STAGE 2: TERRAFORM PROVISIONING (INIT, PLAN, APPLY)
+  # =========================================================
+  terraform-infrastructure-stage:
+    name: "Stage 2: Terraform Infrastructure (${{ github.event.inputs.environment }})"
+    needs: app-ci-stage
+    runs-on: ubuntu-latest
+    outputs:
+      node_role_arn: ${{ steps.tf-output.outputs.node_role_arn }}
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform CLI
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+          terraform_wrapper: false
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Step 2.1 - Bootstrap S3 State Bucket & Inject backend.tf
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET_NAME="eks-tfstate-${AWS_ACCOUNT_ID}"
+          
+          if ! aws s3api head-bucket --bucket "${BUCKET_NAME}" 2>/devnull; then
+            echo "S3 bucket ${BUCKET_NAME} does not exist. Creating..."
+            aws s3api create-bucket --bucket "${BUCKET_NAME}" --region ${{ env.AWS_REGION }}
+            aws s3api put-bucket-versioning --bucket "${BUCKET_NAME}" --versioning-configuration Status=Enabled
+          else
+            echo "S3 bucket ${BUCKET_NAME} already exists."
+          fi
+
+          sed -i "s|PLACEHOLDER_BUCKET|${BUCKET_NAME}|g" eks/backend.tf
+
+      - name: Step 2.2 - Terraform Init & Select Workspace
+        run: |
+          cd eks
+          chmod +x check-environment.sh
+          source check-environment.sh
+          terraform init
+          terraform workspace select -or-create ${{ github.event.inputs.environment }}
+
+      - name: Step 2.3 - Terraform Plan
+        run: |
+          cd eks
+          terraform plan -var="cluster_name=${{ env.EKS_CLUSTER_NAME }}"
+
+      - name: Step 2.4 - Terraform Apply
+        run: |
+          cd eks
+          terraform apply -auto-approve -var="cluster_name=${{ env.EKS_CLUSTER_NAME }}"
+
+      - name: Step 2.5 - Export Node Role ARN Output
+        id: tf-output
+        run: |
+          cd eks
+          NODE_ROLE=$(terraform output -raw NodeInstanceRole)
+          echo "node_role_arn=${NODE_ROLE}" >> $GITHUB_OUTPUT
+
+  # =========================================================
+  # STAGE 3: KUBERNETES DEPLOYMENT & WORKLOAD CONFIGURATION
+  # =========================================================
+  kubernetes-deployment-stage:
+    name: "Stage 3: K8s Cluster Config & App Deploy (${{ github.event.inputs.environment }})"
+    needs: terraform-infrastructure-stage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Helm CLI
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.12.0'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Step 3.1 - Update Kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+
+      - name: Step 3.2 - Join Worker Nodes (aws-auth)
+        env:
+          NODE_ROLE_ARN: ${{ needs.terraform-infrastructure-stage.outputs.node_role_arn }}
+        run: |
+          curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/cloudformation/2020-10-29/aws-auth-cm.yaml
+          sed -i "s|<ARN of instance role (not instance profile)>|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml
+          kubectl apply -f aws-auth-cm.yaml
+
+      - name: Step 3.3 - Install Metrics Server, Observability & Logging Stack
+        run: |
+          helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add elastic https://helm.elastic.co
+          helm repo add fluent https://fluent.github.io/helm-charts
+          helm repo update
+
+          helm upgrade --install metrics-server metrics-server/metrics-server \
+            --namespace kube-system \
+            --set args={--kubelet-insecure-tls}
+
+          sleep 10
+
+          helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --create-namespace \
+            --set grafana.enabled=true \
+            --set prometheus.prometheusSpec.scrapeInterval="15s"
+
+          helm upgrade --install elasticsearch elastic/elasticsearch \
+            --namespace logging \
+            --create-namespace \
+            --set persistence.enabled=false \
+            --set replicas=1 \
+            --set minimumMasterNodes=1 \
+            --set resources.requests.cpu="100m" \
+            --set resources.requests.memory="512Mi" \
+            --wait
+
+          helm upgrade --install kibana elastic/kibana \
+            --namespace logging \
+            --create-namespace \
+            --set resources.requests.cpu="100m" \
+            --set resources.requests.memory="512Mi" \
+            --set elasticsearchHosts="https://elasticsearch-master:9200" \
+            --set createSecret=false \
+            --wait
+
+          cat <<'VALUES_EOF' > /tmp/fluent-bit-values.yaml
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-master-credentials
+                  key: password
+
+          config:
+            inputs: |
+              [INPUT]
+                  Name              tail
+                  Path              /var/log/containers/*.log
+                  multiline.parser  docker, cri
+                  Tag               kube.*
+                  Mem_Buf_Limit     15MB
+                  Skip_Long_Lines   On
+                  Refresh_Interval  5
+                  Read_From_Head    True
+
+            filters: |
+              [FILTER]
+                  Name                kubernetes
+                  Match               kube.*
+                  Kube_URL            https://kubernetes.default.svc:443
+                  Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                  Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+                  Kube_Tag_Prefix     kube.var.log.containers.
+                  Merge_Log           On
+                  Keep_Log            Off
+
+              [FILTER]
+                  Name    grep
+                  Match   kube.*
+                  Exclude $kubernetes['namespace_name'] ^(default|kube-system|monitoring|logging|kube-node-lease|kube-public)$
+
+            outputs: |
+              [OUTPUT]
+                  Name            es
+                  Match           kube.*
+                  Host            elasticsearch-master.logging.svc.cluster.local
+                  Port            9200
+                  HTTP_User       elastic
+                  HTTP_Passwd     ${ELASTIC_PASSWORD}
+                  tls             On
+                  tls.verify      Off
+                  Suppress_Type_Name On
+                  Logstash_Format On
+                  Logstash_Prefix fluent-bit-app-logs
+                  Replace_Dots    On
+                  Retry_Limit     False
+                  net.connect_timeout 10
+          VALUES_EOF
+
+          helm upgrade --install fluent-bit fluent/fluent-bit \
+            --namespace logging \
+            -f /tmp/fluent-bit-values.yaml
+
+          kubectl rollout restart daemonset/fluent-bit -n logging
+          kubectl rollout status daemonset/fluent-bit -n logging --timeout=180s
+
+      - name: Step 3.4 - Deploy Base Setup, Security Controls & Observability Resources
+        run: |
+          kubectl apply -f eks/k8s/base-setup.yaml
+          kubectl apply -f eks/k8s/rbac.yaml
+          kubectl apply -f eks/k8s/network-policy.yaml
+          
+          # AUTOMATED OBSERVABILITY & ALERT ROUTING DEPLOYMENT
+          kubectl apply -f eks/k8s/observability/prometheus-rules.yaml
+          kubectl apply -f eks/k8s/observability/grafana-dashboard-cm.yaml
+          kubectl apply -f eks/k8s/observability/alertmanager-routing.yaml
+
+      - name: Step 3.5 - Deploy App Workloads to Selected Environment Namespace
+        run: |
+          TARGET_NS="${{ github.event.inputs.environment }}-apps"
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
+
+          kubectl create ns ${TARGET_NS} --dry-run=client -o yaml | kubectl apply -f -
+          sed -i '/^[[:space:]]*namespace:/d' eks/k8s/app/*.yaml
+          sed -i "s|image: nginx:latest|image: ${ECR_IMAGE}|g" eks/k8s/app/deployment.yaml
+
+          kubectl apply -f eks/k8s/app/configmap.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/secret.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/resource-limits.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/deployment.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/service.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/hpa.yaml -n ${TARGET_NS}
+          kubectl apply -f eks/k8s/app/ingress.yaml -n ${TARGET_NS}
+
+      - name: Step 3.6 - Verify Rollout Status & Auto-Rollback on Failure
+        run: |
+          TARGET_NS="${{ github.event.inputs.environment }}-apps"
+          echo "=== Verifying Deployment Rollout Status in ${TARGET_NS} ==="
+          
+          if ! kubectl rollout status deployment/prod-app -n ${TARGET_NS} --timeout=180s; then
+            echo "::error::Deployment rollout failed or timed out! Executing automated rollback..."
+            kubectl rollout undo deployment/prod-app -n ${TARGET_NS}
+            kubectl rollout status deployment/prod-app -n ${TARGET_NS}
+            exit 1
+          else
+            echo "SUCCESS: Deployment rollout completed successfully!"
+          fi
+
+      - name: Step 3.7 - Validate Incident Alert Generation & Acknowledgement Flow
+        run: |
+          echo "=== 1. Locating Alertmanager Pod & Port-Forwarding ==="
+          kubectl port-forward svc/prometheus-kube-prometheus-alertmanager 9093:9093 -n monitoring &
+          PF_PID=$!
+          sleep 5
+
+          echo "=== 2. Injecting Synthetic Critical Alert Payload from Runner ==="
+          NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          END=$(date -u -d "+15 minutes" +"%Y-%m-%dT%H:%M:%SZ")
+
+          curl -s -X POST "http://localhost:9093/api/v2/alerts" \
+            -H 'Content-Type: application/json' \
+            -d "[
+              {
+                \"labels\": {
+                  \"alertname\": \"KubernetesPodNotReady\",
+                  \"severity\": \"critical\",
+                  \"namespace\": \"${{ github.event.inputs.environment }}-apps\",
+                  \"pod\": \"synthetic-test-pod\"
+                },
+                \"annotations\": {
+                  \"summary\": \"Pipeline Validation Critical Alert\"
+                },
+                \"startsAt\": \"$NOW\",
+                \"endsAt\": \"$END\"
+              }
+            ]"
+
+          echo "=== 3. Validating Alert Generation and Severity Routing ==="
+          sleep 5
+          ACTIVE_ALERT=$(curl -s "http://localhost:9093/api/v2/alerts?filter=alertname%3DKubernetesPodNotReady")
+
+          if echo "$ACTIVE_ALERT" | grep -q "KubernetesPodNotReady"; then
+              echo "SUCCESS: Critical Alert generated and routed!"
+          else
+              echo "ERROR: Alert generation/routing failed."
+              kill $PF_PID || true
+              exit 1
+          fi
+
+          echo "=== 4. Validating Acknowledgement Flow (Creating Silence) ==="
+          SILENCE_RESP=$(curl -s -X POST "http://localhost:9093/api/v2/silences" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"matchers\": [
+                {\"name\": \"alertname\", \"value\": \"KubernetesPodNotReady\", \"isRegex\": false},
+                {\"name\": \"severity\", \"value\": \"critical\", \"isRegex\": false}
+              ],
+              \"startsAt\": \"$NOW\",
+              \"endsAt\": \"$END\",
+              \"createdBy\": \"GitHub-Actions-CI\",
+              \"comment\": \"Automated Pipeline Acknowledgement Validation\"
+            }")
+
+          echo "Silence creation response: $SILENCE_RESP"
+          SILENCE_ID=$(echo "$SILENCE_RESP" | jq -r '.silenceID // empty')
+
+          if [ -n "$SILENCE_ID" ]; then
+              echo "SUCCESS: Incident acknowledgement flow validated! Silence ID: $SILENCE_ID"
+              # Clean up silence
+              curl -s -X DELETE "http://localhost:9093/api/v2/silence/$SILENCE_ID"
+          else
+              echo "ERROR: Failed to create silence."
+              kill $PF_PID || true
+              exit 1
+          fi
+
+          echo "=== 5. Cleaning Up Port-Forward ==="
+          kill $PF_PID || true
