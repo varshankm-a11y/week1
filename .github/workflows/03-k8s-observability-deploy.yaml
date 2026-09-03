@@ -44,37 +44,10 @@ jobs:
 
       - name: Step 3.2 - Join Worker Nodes (aws-auth)
         run: |
-          echo "=== Fetching Worker Node IAM Role ARN ==="
-          NODE_ROLE_ARN="arn:aws:iam::651901885850:role/eksworkernoderole"
-          
-          # Fallback to dynamic lookup if specific role ARN is unavailable
-          if [ -z "$NODE_ROLE_ARN" ]; then
-            NODE_ROLE_ARN=$(aws iam list-roles --query "Roles[?contains(RoleName, '${{ env.EKS_CLUSTER_NAME }}') || contains(RoleName, 'eksworkernoderole')].Arn" --output text | head -n 1)
-          fi
-
-          echo "Applying node authentication for IAM Role: ${NODE_ROLE_ARN}"
-
-          # Create aws-auth ConfigMap dynamically
-          cat <<CMEOF > aws-auth-cm.yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: aws-auth
-  namespace: kube-system
-data:
-  mapRoles: |
-    - rolearn: ${NODE_ROLE_ARN}
-      username: system:node:{{EC2PrivateDNSName}}
-      groups:
-        - system:bootstrappers
-        - system:nodes
-CMEOF
-
+          NODE_ROLE_ARN=$(aws iam list-roles --query "Roles[?contains(RoleName, '${{ env.EKS_CLUSTER_NAME }}') && contains(RoleName, 'node')].Arn" --output text | head -n 1)
+          curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/cloudformation/2020-10-29/aws-auth-cm.yaml
+          sed -i "s|<ARN of instance role (not instance profile)>|${NODE_ROLE_ARN}|g" aws-auth-cm.yaml
           kubectl apply -f aws-auth-cm.yaml
-          
-          echo "=== Waiting 30s for Worker Nodes to Register ==="
-          sleep 30
-          kubectl get nodes -o wide
 
       - name: Step 3.3 - Install Metrics Server & Lightweight Observability Stack
         run: |
@@ -99,7 +72,6 @@ CMEOF
             --create-namespace \
             --no-hooks \
             --set grafana.enabled=true \
-            --set alertmanager.enabled=false \
             --set prometheus.prometheusSpec.resources.requests.cpu="10m" \
             --set prometheus.prometheusSpec.resources.requests.memory="128Mi" \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
@@ -140,13 +112,10 @@ CMEOF
           kubectl apply -f eks/k8s/app/hpa.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/ingress.yaml -n ${TARGET_NS}
 
-      - name: Step 3.6 - Validate Cluster Workloads & Observability Status
+      - name: Step 3.6 - Validate Cluster Workloads & Observability Config Status
         run: |
-          echo "=== 1. Checking Node Status ==="
-          kubectl get nodes
-
-          echo "=== 2. Checking Application Workloads ==="
+          echo "=== 1. Checking Application Workload Status ==="
           kubectl get pods,svc,hpa,ingress -n ${{ github.event.inputs.environment }}-apps
 
-          echo "=== 3. Checking Monitoring Stack Status ==="
-          kubectl get pods,svc -n monitoring
+          echo "=== 2. Checking Observability Stack Status ==="
+          kubectl get pods,svc,configmap -n monitoring
