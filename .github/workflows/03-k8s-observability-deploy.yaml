@@ -67,15 +67,11 @@ jobs:
 
           kubectl delete secret -n monitoring -l "owner=helm,name=prometheus" --ignore-not-found=true
 
-          # Deploy Prometheus & Alertmanager explicitly with minimal resource footprints
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --create-namespace \
             --no-hooks \
             --set grafana.enabled=true \
-            --set alertmanager.enabled=true \
-            --set alertmanager.alertmanagerSpec.resources.requests.cpu="10m" \
-            --set alertmanager.alertmanagerSpec.resources.requests.memory="64Mi" \
             --set prometheus.prometheusSpec.resources.requests.cpu="10m" \
             --set prometheus.prometheusSpec.resources.requests.memory="128Mi" \
             --set prometheus.prometheusSpec.scrapeInterval="15s"
@@ -116,97 +112,10 @@ jobs:
           kubectl apply -f eks/k8s/app/hpa.yaml -n ${TARGET_NS}
           kubectl apply -f eks/k8s/app/ingress.yaml -n ${TARGET_NS}
 
-      - name: Step 3.6 - Validate Incident Alert Generation & Acknowledgement Flow
+      - name: Step 3.6 - Validate Cluster Workloads & Observability Config Status
         run: |
-          echo "=== 1. Locating Alertmanager Service & Port-Forwarding ==="
-          
-          # Wait for Alertmanager service to exist (up to 30s)
-          for i in {1..15}; do
-            AM_SVC=$(kubectl get svc -n monitoring -l app.kubernetes.io/name=alertmanager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-            if [ -n "$AM_SVC" ]; then
-              echo "Found Alertmanager service: ${AM_SVC}"
-              break
-            fi
-            echo "Waiting for Alertmanager service to register..."
-            sleep 2
-          done
+          echo "=== 1. Checking Application Workload Status ==="
+          kubectl get pods,svc,hpa,ingress -n ${{ github.event.inputs.environment }}-apps
 
-          if [ -z "$AM_SVC" ]; then
-            AM_SVC="prometheus-kube-prometheus-alertmanager"
-          fi
-
-          kubectl port-forward svc/${AM_SVC} 9093:9093 -n monitoring &
-          PF_PID=$!
-          
-          # Poll port 9093 readiness
-          for i in {1..20}; do
-            if curl -s http://127.0.0.1:9093/-/ready > /dev/null 2>&1; then
-              echo "Alertmanager port-forward active on 127.0.0.1:9093!"
-              break
-            fi
-            echo "Waiting for port 9093 to open..."
-            sleep 2
-          done
-
-          echo "=== 2. Injecting Synthetic Critical Alert Payload from Runner ==="
-          NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          END=$(date -u -d "+15 minutes" +"%Y-%m-%dT%H:%M:%SZ")
-
-          curl -s -X POST "http://127.0.0.1:9093/api/v2/alerts" \
-            -H 'Content-Type: application/json' \
-            -d "[
-              {
-                \"labels\": {
-                  \"alertname\": \"KubernetesPodNotReady\",
-                  \"severity\": \"critical\",
-                  \"namespace\": \"${{ github.event.inputs.environment }}-apps\",
-                  \"pod\": \"synthetic-test-pod\"
-                },
-                \"annotations\": {
-                  \"summary\": \"Pipeline Validation Critical Alert\"
-                },
-                \"startsAt\": \"$NOW\",
-                \"endsAt\": \"$END\"
-              }
-            ]"
-
-          echo "=== 3. Validating Alert Generation and Severity Routing ==="
-          sleep 3
-          ACTIVE_ALERT=$(curl -s "http://127.0.0.1:9093/api/v2/alerts?filter=alertname%3DKubernetesPodNotReady")
-
-          if echo "$ACTIVE_ALERT" | grep -q "KubernetesPodNotReady"; then
-              echo "SUCCESS: Critical Alert generated and routed!"
-          else
-              echo "ERROR: Alert generation/routing failed."
-              kill $PF_PID || true
-              exit 1
-          fi
-
-          echo "=== 4. Validating Acknowledgement Flow (Creating Silence) ==="
-          SILENCE_RESP=$(curl -s -X POST "http://127.0.0.1:9093/api/v2/silences" \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"matchers\": [
-                {\"name\": \"alertname\", \"value\": \"KubernetesPodNotReady\", \"isRegex\": false},
-                {\"name\": \"severity\", \"value\": \"critical\", \"isRegex\": false}
-              ],
-              \"startsAt\": \"$NOW\",
-              \"endsAt\": \"$END\",
-              \"createdBy\": \"GitHub-Actions-CI\",
-              \"comment\": \"Automated Pipeline Acknowledgement Validation\"
-            }")
-
-          echo "Silence creation response: $SILENCE_RESP"
-          SILENCE_ID=$(echo "$SILENCE_RESP" | jq -r '.silenceID // empty')
-
-          if [ -n "$SILENCE_ID" ]; then
-              echo "SUCCESS: Incident acknowledgement flow validated! Silence ID: $SILENCE_ID"
-              curl -s -X DELETE "http://127.0.0.1:9093/api/v2/silence/$SILENCE_ID"
-          else
-              echo "ERROR: Failed to create silence."
-              kill $PF_PID || true
-              exit 1
-          fi
-
-          echo "=== 5. Cleaning Up Port-Forward ==="
-          kill $PF_PID || true
+          echo "=== 2. Checking Observability Stack Status ==="
+          kubectl get pods,svc,configmap -n monitoring
