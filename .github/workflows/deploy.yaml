@@ -252,7 +252,7 @@ jobs:
             inputs: |
               [INPUT]
                   Name              tail
-                  Path              /var/log/containers/*.log
+                  Path              /var/log/containers/*-apps_*.log
                   multiline.parser  docker, cri
                   Tag               kube.*
                   Mem_Buf_Limit     15MB
